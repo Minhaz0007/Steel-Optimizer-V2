@@ -5,63 +5,90 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { reconstructModel } from '@/lib/ml-engine';
+import { predictWithModel } from '@/lib/ml-engine';
 import { toast } from 'sonner';
 import { motion } from 'framer-motion';
-import { Sparkles, ArrowRight } from 'lucide-react';
-import { RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, ResponsiveContainer } from 'recharts';
+import { Sparkles, TrendingUp, AlertCircle, Info } from 'lucide-react';
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell
+} from 'recharts';
+import { useNavigate } from 'react-router-dom';
+
+// Score color: green for high, orange for mid, red for low
+function accuracyColor(acc: number) {
+  if (acc >= 85) return 'text-green-600 dark:text-green-400';
+  if (acc >= 65) return 'text-amber-600 dark:text-amber-400';
+  return 'text-red-500';
+}
 
 export default function Predictions() {
   const trainedModels = useStore((state) => state.trainedModels);
-  const currentDataset = useStore((state) => state.currentDataset);
   const [selectedModelId, setSelectedModelId] = useState<string>('');
-  const [inputs, setInputs] = useState<Record<string, number>>({});
+  const [inputs, setInputs] = useState<Record<string, string>>({});
   const [prediction, setPrediction] = useState<number | null>(null);
+  const [predError, setPredError] = useState<string | null>(null);
+  const navigate = useNavigate();
 
-  const selectedModel = useMemo(() => 
-    trainedModels.find(m => m.id === selectedModelId), 
-  [selectedModelId, trainedModels]);
+  const selectedModel = useMemo(
+    () => trainedModels.find(m => m.id === selectedModelId),
+    [selectedModelId, trainedModels]
+  );
 
   const handlePredict = () => {
     if (!selectedModel) return;
+    setPredError(null);
 
-    try {
-      // Reconstruct model
-      const model = reconstructModel(selectedModel);
-      if (!model) {
-        // Fallback for simulated models
-        if (selectedModel.type === 'XGBoost' || selectedModel.type === 'Linear Regression') {
-           // Mock prediction based on average of inputs + random noise for demo
-           const avgInput = Object.values(inputs).reduce((a, b) => a + b, 0) / Object.values(inputs).length;
-           const mockPred = avgInput * (1 + (Math.random() * 0.2 - 0.1));
-           setPrediction(mockPred);
-           toast.success('Prediction generated (Simulated)');
-           return;
-        }
-        toast.error('Could not load model instance');
-        return;
-      }
-
-      // Prepare input vector in correct order
-      const inputVector = selectedModel.config.features.map(f => inputs[f] || 0);
-      const result = model.predict([inputVector]); // Predict expects array of arrays
-      setPrediction(result[0]);
-      toast.success('Prediction generated successfully');
-    } catch (err) {
-      console.error(err);
-      toast.error('Prediction failed');
+    // Validate all inputs
+    const missing = selectedModel.config.features.filter(f => inputs[f] === '' || inputs[f] === undefined);
+    if (missing.length > 0) {
+      setPredError(`Please enter values for: ${missing.join(', ')}`);
+      return;
     }
+
+    const inputVector = selectedModel.config.features.map(f => parseFloat(inputs[f] ?? '0'));
+    if (inputVector.some(v => isNaN(v))) {
+      setPredError('All input values must be valid numbers.');
+      return;
+    }
+
+    const result = predictWithModel(selectedModel, inputVector);
+    if (result === null) {
+      setPredError('Model could not generate a prediction. The model may need to be retrained.');
+      toast.error('Prediction failed');
+      return;
+    }
+
+    setPrediction(result);
+    toast.success('Prediction generated');
   };
+
+  // 95% CI using model RMSE: prediction ± 1.96 * RMSE
+  const ciLow  = prediction !== null && selectedModel ? prediction - 1.96 * selectedModel.metrics.rmse : null;
+  const ciHigh = prediction !== null && selectedModel ? prediction + 1.96 * selectedModel.metrics.rmse : null;
+
+  // Top-5 most important features for optimization tips
+  const topFeatures = useMemo(() => {
+    if (!selectedModel?.featureImportance) return [];
+    return selectedModel.featureImportance.slice(0, 5);
+  }, [selectedModel]);
+
+  // Feature importance chart data
+  const importanceChartData = useMemo(() => {
+    if (!selectedModel?.featureImportance) return [];
+    return selectedModel.featureImportance.slice(0, 8).map(fi => ({
+      name: fi.feature.length > 14 ? fi.feature.substring(0, 12) + '…' : fi.feature,
+      fullName: fi.feature,
+      importance: parseFloat((fi.importance * 100).toFixed(1)),
+    }));
+  }, [selectedModel]);
 
   if (trainedModels.length === 0) {
     return (
       <div className="flex items-center justify-center h-full">
         <div className="text-center space-y-4">
           <h2 className="text-2xl font-bold">No Trained Models</h2>
-          <p className="text-muted-foreground">Please train a model first.</p>
-          <Button variant="outline" onClick={() => window.location.href = '/training'}>
-            Go to Training
-          </Button>
+          <p className="text-muted-foreground">Please train a model first on the Training page.</p>
+          <Button onClick={() => navigate('/training')}>Go to Training</Button>
         </div>
       </div>
     );
@@ -72,49 +99,93 @@ export default function Predictions() {
       <div className="space-y-2">
         <h1 className="text-3xl font-bold tracking-tight">Predictions</h1>
         <p className="text-muted-foreground">
-          Use your trained models to predict optimal parameters.
+          Enter controllable process parameters to predict the target output and get optimization recommendations.
         </p>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        {/* Input panel */}
         <Card className="lg:col-span-1 h-fit">
           <CardHeader>
             <CardTitle>Input Parameters</CardTitle>
-            <CardDescription>Select model and enter values</CardDescription>
+            <CardDescription>Select model and enter process values</CardDescription>
           </CardHeader>
-          <CardContent className="space-y-6">
+          <CardContent className="space-y-5">
+            {/* Model selector */}
             <div className="space-y-2">
               <Label>Select Model</Label>
-              <Select onValueChange={setSelectedModelId} value={selectedModelId}>
+              <Select
+                onValueChange={(v) => {
+                  setSelectedModelId(v);
+                  setInputs({});
+                  setPrediction(null);
+                  setPredError(null);
+                }}
+                value={selectedModelId}
+              >
                 <SelectTrigger>
                   <SelectValue placeholder="Choose a model..." />
                 </SelectTrigger>
                 <SelectContent>
-                  {trainedModels.map((m) => (
+                  {trainedModels.map(m => (
                     <SelectItem key={m.id} value={m.id}>
-                      {m.config.targetVariable} ({m.type}) - R²: {m.metrics.r2.toFixed(2)}
+                      <span className="font-medium">{m.config.targetVariable}</span>
+                      <span className="ml-1 text-muted-foreground text-xs">({m.type}) R²: {m.metrics.r2.toFixed(3)} · Acc: {m.metrics.accuracy.toFixed(1)}%</span>
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
 
+            {/* Model accuracy badge */}
             {selectedModel && (
-              <div className="space-y-4 border-t pt-4">
-                <h4 className="text-sm font-medium">Features</h4>
-                {selectedModel.config.features.map((f) => (
-                  <div key={f} className="space-y-1">
-                    <Label htmlFor={f} className="text-xs">{f}</Label>
-                    <Input 
-                      id={f} 
-                      type="number" 
-                      placeholder="0.00"
-                      value={inputs[f] || ''}
-                      onChange={(e) => setInputs({ ...inputs, [f]: parseFloat(e.target.value) })}
-                    />
+              <div className="flex items-center gap-2 px-3 py-2 bg-muted/50 rounded-lg text-sm">
+                <Info className="h-4 w-4 text-muted-foreground flex-shrink-0" />
+                <span className="text-muted-foreground">Model accuracy: </span>
+                <span className={`font-bold ${accuracyColor(selectedModel.metrics.accuracy)}`}>
+                  {selectedModel.metrics.accuracy.toFixed(1)}%
+                </span>
+                <span className="text-muted-foreground">(±{selectedModel.metrics.rmse.toFixed(2)} RMSE)</span>
+              </div>
+            )}
+
+            {/* Feature inputs */}
+            {selectedModel && (
+              <div className="space-y-3 border-t pt-4">
+                <h4 className="text-sm font-medium">Controllable Inputs</h4>
+                {selectedModel.config.features.map(f => {
+                  const rank = selectedModel.featureImportance?.findIndex(fi => fi.feature === f) ?? -1;
+                  const isTop3 = rank >= 0 && rank < 3;
+                  return (
+                    <div key={f} className="space-y-1">
+                      <Label htmlFor={f} className="text-xs flex items-center gap-1">
+                        {f}
+                        {isTop3 && (
+                          <span className="text-[10px] bg-secondary/20 text-secondary-foreground px-1 rounded">
+                            top feature
+                          </span>
+                        )}
+                      </Label>
+                      <Input
+                        id={f}
+                        type="number"
+                        placeholder="Enter value"
+                        value={inputs[f] ?? ''}
+                        onChange={(e) => setInputs(prev => ({ ...prev, [f]: e.target.value }))}
+                        className={isTop3 ? 'border-secondary/50 focus:border-secondary' : ''}
+                      />
+                    </div>
+                  );
+                })}
+
+                {predError && (
+                  <div className="flex items-start gap-2 text-xs text-destructive bg-destructive/10 rounded p-2">
+                    <AlertCircle className="h-3.5 w-3.5 flex-shrink-0 mt-0.5" />
+                    {predError}
                   </div>
-                ))}
-                <Button className="w-full" onClick={handlePredict}>
+                )}
+
+                <Button className="w-full mt-2" onClick={handlePredict}>
                   <Sparkles className="mr-2 h-4 w-4" />
                   Generate Prediction
                 </Button>
@@ -123,49 +194,127 @@ export default function Predictions() {
           </CardContent>
         </Card>
 
-        <div className="lg:col-span-2 space-y-6">
-          {prediction !== null && selectedModel && (
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-            >
+        {/* Results panel */}
+        <div className="lg:col-span-2 space-y-5">
+          {/* Prediction result */}
+          {prediction !== null && selectedModel ? (
+            <motion.div initial={{ opacity: 0, scale: 0.97 }} animate={{ opacity: 1, scale: 1 }}>
               <Card className="bg-primary/5 border-primary/20">
                 <CardHeader>
                   <CardTitle className="text-primary">Prediction Result</CardTitle>
-                  <CardDescription>Target: {selectedModel.config.targetVariable}</CardDescription>
+                  <CardDescription>
+                    Target: <strong>{selectedModel.config.targetVariable}</strong> · Model: {selectedModel.type}
+                  </CardDescription>
                 </CardHeader>
-                <CardContent className="text-center py-12">
-                  <div className="text-6xl font-bold text-primary">
-                    {prediction.toFixed(2)}
+                <CardContent>
+                  {/* Main value */}
+                  <div className="text-center py-6">
+                    <div className="text-7xl font-bold text-primary">
+                      {prediction.toFixed(2)}
+                    </div>
+                    <p className="text-muted-foreground mt-2">Predicted {selectedModel.config.targetVariable}</p>
                   </div>
-                  <p className="text-muted-foreground mt-2">
-                    Predicted Value
-                  </p>
-                  
-                  <div className="mt-8 grid grid-cols-1 md:grid-cols-2 gap-4 text-left">
-                    <div className="bg-background p-4 rounded-lg border">
-                      <h4 className="font-medium mb-2">Confidence Interval (95%)</h4>
-                      <div className="text-lg">
-                        {(prediction * 0.95).toFixed(2)} - {(prediction * 1.05).toFixed(2)}
+
+                  {/* Metrics row */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mt-2">
+                    <div className="bg-background rounded-lg border p-4">
+                      <h4 className="text-sm font-medium mb-2">95% Confidence Interval</h4>
+                      <div className="text-base font-semibold">
+                        {ciLow!.toFixed(2)} — {ciHigh!.toFixed(2)}
                       </div>
-                      <p className="text-xs text-muted-foreground">Estimated based on model RMSE</p>
+                      <p className="text-xs text-muted-foreground mt-1">Prediction ± 1.96 × RMSE ({selectedModel.metrics.rmse.toFixed(3)})</p>
                     </div>
-                    <div className="bg-background p-4 rounded-lg border">
-                      <h4 className="font-medium mb-2">Optimization Tip</h4>
-                      <p className="text-sm text-muted-foreground">
-                        To improve this result, try adjusting the input parameters with high feature importance.
-                      </p>
+                    <div className="bg-background rounded-lg border p-4">
+                      <h4 className="text-sm font-medium mb-2">Model Accuracy</h4>
+                      <div className={`text-2xl font-bold ${accuracyColor(selectedModel.metrics.accuracy)}`}>
+                        {selectedModel.metrics.accuracy.toFixed(1)}%
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-1">100 − MAPE on held-out test set</p>
+                    </div>
+                    <div className="bg-background rounded-lg border p-4">
+                      <h4 className="text-sm font-medium mb-2">Model R² Score</h4>
+                      <div className="text-2xl font-bold">
+                        {selectedModel.metrics.r2.toFixed(4)}
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-1">Variance explained by model</p>
                     </div>
                   </div>
+
+                  {/* Optimization tips */}
+                  {topFeatures.length > 0 && (
+                    <div className="mt-5 bg-background rounded-lg border p-4">
+                      <h4 className="font-medium mb-3 flex items-center gap-2">
+                        <TrendingUp className="h-4 w-4 text-secondary" />
+                        Optimization Recommendations
+                      </h4>
+                      <p className="text-xs text-muted-foreground mb-3">
+                        These controllable parameters have the highest impact on <strong>{selectedModel.config.targetVariable}</strong>. Fine-tuning them will produce the greatest improvement in future batches.
+                      </p>
+                      <div className="space-y-2">
+                        {topFeatures.map((fi, i) => (
+                          <div key={fi.feature} className="flex items-center gap-3 text-sm">
+                            <span className="w-5 h-5 rounded-full bg-secondary/20 text-secondary-foreground text-xs flex items-center justify-center font-bold flex-shrink-0">
+                              {i + 1}
+                            </span>
+                            <span className="font-medium flex-1">{fi.feature}</span>
+                            <div className="w-24 bg-muted rounded-full h-2">
+                              <div
+                                className="h-2 rounded-full bg-secondary"
+                                style={{ width: `${Math.min(100, fi.importance * 100)}%` }}
+                              />
+                            </div>
+                            <span className="text-muted-foreground text-xs w-10 text-right">
+                              {(fi.importance * 100).toFixed(1)}%
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </CardContent>
               </Card>
             </motion.div>
+          ) : (
+            !predError && (
+              <div className="h-48 flex items-center justify-center text-muted-foreground border-2 border-dashed rounded-lg">
+                {selectedModel
+                  ? 'Enter all parameter values and click Generate Prediction.'
+                  : 'Select a model to begin.'}
+              </div>
+            )
           )}
-          
-          {!prediction && (
-            <div className="h-full flex items-center justify-center text-muted-foreground border-2 border-dashed rounded-lg p-12">
-              Select a model and enter parameters to see predictions.
-            </div>
+
+          {/* Feature importance chart (always visible when model is selected) */}
+          {selectedModel && importanceChartData.length > 0 && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Feature Importance — {selectedModel.type}</CardTitle>
+                <CardDescription>Which inputs drive {selectedModel.config.targetVariable} the most</CardDescription>
+              </CardHeader>
+              <CardContent className="h-[240px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart
+                    data={importanceChartData}
+                    layout="vertical"
+                    margin={{ top: 4, right: 36, left: 8, bottom: 4 }}
+                  >
+                    <CartesianGrid strokeDasharray="3 3" opacity={0.3} horizontal={false} />
+                    <XAxis type="number" unit="%" tick={{ fontSize: 10 }} />
+                    <YAxis dataKey="name" type="category" width={110} tick={{ fontSize: 10 }} />
+                    <Tooltip
+                      contentStyle={{ backgroundColor: 'hsl(var(--card))', borderColor: 'hsl(var(--border))' }}
+                      formatter={(val: any) => [val + '%', 'Importance']}
+                      labelFormatter={(label) => importanceChartData.find(d => d.name === label)?.fullName ?? label}
+                    />
+                    <Bar dataKey="importance" radius={[0, 4, 4, 0]}>
+                      {importanceChartData.map((_, i) => (
+                        <Cell key={i} fill={i < 3 ? 'hsl(var(--secondary))' : 'hsl(var(--primary))'} opacity={1 - i * 0.06} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </CardContent>
+            </Card>
           )}
         </div>
       </div>

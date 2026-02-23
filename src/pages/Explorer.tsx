@@ -69,7 +69,7 @@ export default function Explorer() {
       hist[binIndex].count++;
     });
 
-    return { data: hist, label: targetCol };
+    return { histData: hist, label: targetCol };
   }, [currentDataset]);
 
   const correlationData = useMemo(() => {
@@ -131,12 +131,12 @@ export default function Explorer() {
         >
           <Card className="h-[400px]">
             <CardHeader>
-              <CardTitle>Distribution: {histogramData.label}</CardTitle>
+              <CardTitle>Distribution: {'label' in histogramData ? histogramData.label : ''}</CardTitle>
               <CardDescription>Histogram of values</CardDescription>
             </CardHeader>
             <CardContent className="h-[300px]">
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={histogramData.data}>
+                <BarChart data={'histData' in histogramData ? histogramData.histData : []}>
                   <CartesianGrid strokeDasharray="3 3" opacity={0.3} />
                   <XAxis dataKey="bin" />
                   <YAxis />
@@ -162,6 +162,7 @@ export default function Explorer() {
               <CardDescription>Relationships between key variables</CardDescription>
             </CardHeader>
             <CardContent className="h-[300px] overflow-auto">
+              {'cols' in correlationData && (
               <div className="grid" style={{ gridTemplateColumns: `repeat(${correlationData.cols.length}, 1fr)` }}>
                 {correlationData.matrix.map((row, i) => (
                   row.map((val, j) => (
@@ -169,7 +170,7 @@ export default function Explorer() {
                       key={`${i}-${j}`}
                       className="aspect-square flex items-center justify-center text-xs border border-border/50"
                       style={{
-                        backgroundColor: val > 0 
+                        backgroundColor: val > 0
                           ? `rgba(249, 115, 22, ${val})` // Orange for positive
                           : `rgba(6, 182, 212, ${Math.abs(val)})`, // Teal for negative
                         color: Math.abs(val) > 0.5 ? 'white' : 'inherit'
@@ -181,8 +182,9 @@ export default function Explorer() {
                   ))
                 ))}
               </div>
+              )}
               <div className="flex justify-between mt-2 text-xs text-muted-foreground">
-                {correlationData.cols.map((col, i) => (
+                {'cols' in correlationData && correlationData.cols.map((col, i) => (
                   <span key={i} className="truncate w-full text-center" title={col}>{col.substring(0, 3)}</span>
                 ))}
               </div>
