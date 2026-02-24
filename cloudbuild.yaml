@@ -1,47 +1,55 @@
+# Cloud Run Continuous Deployment configuration
+#
+# Cloud Run's "Continuously deploy from a repository" wizard auto-fills
+# these substitution variables when it creates the trigger — you never
+# need to set them manually:
+#
+#   $_AR_HOSTNAME   — Artifact Registry host  (e.g. us-central1-docker.pkg.dev)
+#   $_SERVICE_NAME  — Cloud Run service name   (set in the wizard)
+#   $_SERVICE_REGION — GCP region              (set in the wizard)
+#   $PROJECT_ID     — GCP project ID           (injected by Cloud Build)
+#   $COMMIT_SHA     — Git commit hash          (injected by Cloud Build)
+#   $_TRIGGER_ID    — Cloud Build trigger ID   (injected by Cloud Build)
+
 steps:
-  # ── 1. Build the Docker image ──────────────────────────────────────────
-  - name: 'gcr.io/cloud-builders/docker'
+  # ── 1. Build ───────────────────────────────────────────────────────────
+  - id: Build
+    name: 'gcr.io/cloud-builders/docker'
     args:
       - build
       - -t
-      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_SERVICE_NAME}/${_SERVICE_NAME}:$COMMIT_SHA'
-      - -t
-      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_SERVICE_NAME}/${_SERVICE_NAME}:latest'
+      - '$_AR_HOSTNAME/$PROJECT_ID/$_SERVICE_REGION/$_SERVICE_NAME:$COMMIT_SHA'
       - .
 
-  # ── 2. Push the image to Artifact Registry ─────────────────────────────
-  - name: 'gcr.io/cloud-builders/docker'
+  # ── 2. Push to Artifact Registry ───────────────────────────────────────
+  - id: Push
+    name: 'gcr.io/cloud-builders/docker'
     args:
       - push
-      - --all-tags
-      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_SERVICE_NAME}/${_SERVICE_NAME}'
+      - '$_AR_HOSTNAME/$PROJECT_ID/$_SERVICE_REGION/$_SERVICE_NAME:$COMMIT_SHA'
 
   # ── 3. Deploy to Cloud Run ─────────────────────────────────────────────
-  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+  - id: Deploy
+    name: 'gcr.io/google.com/cloudsdktool/cloud-sdk:slim'
     entrypoint: gcloud
     args:
       - run
-      - deploy
-      - '${_SERVICE_NAME}'
-      - --image
-      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_SERVICE_NAME}/${_SERVICE_NAME}:$COMMIT_SHA'
-      - --region
-      - '${_REGION}'
-      - --platform
-      - managed
-      - --allow-unauthenticated
-      - --port
-      - '8080'
-      - --memory
-      - '512Mi'
-      - --min-instances
-      - '0'
-      - --max-instances
-      - '3'
+      - services
+      - update
+      - '$_SERVICE_NAME'
+      - '--platform=managed'
+      - '--image=$_AR_HOSTNAME/$PROJECT_ID/$_SERVICE_REGION/$_SERVICE_NAME:$COMMIT_SHA'
+      - '--region=$_SERVICE_REGION'
+      - '--allow-unauthenticated'
+      - '--memory=512Mi'
+      - '--min-instances=0'
+      - '--max-instances=3'
+      - '--port=8080'
+      - '--quiet'
+      - '--labels=managed-by=gcp-cloud-build-deploy-cloud-run,commit-sha=$COMMIT_SHA,gcb-trigger-id=$_TRIGGER_ID'
 
-substitutions:
-  _SERVICE_NAME: steel-optimizer   # Cloud Run service name (change if needed)
-  _REGION: us-central1             # GCP region (change if needed)
+images:
+  - '$_AR_HOSTNAME/$PROJECT_ID/$_SERVICE_REGION/$_SERVICE_NAME:$COMMIT_SHA'
 
 options:
   logging: CLOUD_LOGGING_ONLY
