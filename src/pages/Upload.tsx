@@ -21,11 +21,12 @@ import {
 } from '@/components/ui/select';
 
 // ─────────────────────────────────────────────
-// Steel-plant column keyword dictionary
+// Column keyword dictionary (steel plant + refinery)
 // Priority order: identifier → output → controllable → uncontrollable
 // ─────────────────────────────────────────────
 const STEEL_KEYWORDS: Record<ColumnMapping['category'], string[]> = {
   identifier: [
+    // Steel plant identifiers
     'heat_no', 'heat no', 'heatno', 'heat#', 'heat_num', 'heatnumber',
     'batch_id', 'batch_no', 'batchid', 'batch#',
     'cast_no', 'castno', 'cast#',
@@ -38,6 +39,8 @@ const STEEL_KEYWORDS: Record<ColumnMapping['category'], string[]> = {
     '_date', 'date_', 'datetime', 'timestamp', 'time_',
     '_time', 'tap_date', 'heat_date',
     ' id', '_id', 'index', 'record',
+    // Refinery / facility identifiers
+    'state',     // US state where plant is located
   ],
   output: [
     // Yield & weight
@@ -72,6 +75,11 @@ const STEEL_KEYWORDS: Record<ColumnMapping['category'], string[]> = {
     // Consumable loss (result, not input)
     'electrode_consumption', 'electrode_loss',
     'refractory_wear', 'lining_wear',
+    // Refinery / petroleum outputs
+    'utilization',   // Utilization % — key plant KPI
+    'crude_run',     // Total Crude Run (bbl)
+    'crude run',
+    'total_crude',
   ],
   controllable: [
     // Oxygen / gas injection
@@ -125,6 +133,13 @@ const STEEL_KEYWORDS: Record<ColumnMapping['category'], string[]> = {
     // Deoxidation / desulfurization
     'al_deox', 'deoxidizer', 'desulf_agent',
     'cao_addition', 'cao_add',
+    // Refinery / petroleum energy utilities
+    'steam',         // steam_mmbtu — utility input
+    'mmbtu',         // catch-all for mmbtu-unit energy columns
+    // Refinery feedstock sourcing (controllable decisions)
+    'domestic_bbl',    'domestic_crude',
+    'imported_bbl',    'imported_crude',
+    'feedstock',       'crude_type',   'crude_blend',
   ],
   uncontrollable: [],
 };
@@ -341,7 +356,7 @@ export default function UploadPage() {
       <div className="space-y-2">
         <h1 className="text-3xl font-bold tracking-tight">Upload Data</h1>
         <p className="text-muted-foreground">
-          Upload historical steel plant data (CSV or Excel). Columns are auto-categorized — review and adjust before proceeding.
+          Upload historical plant data (CSV or Excel). Columns are auto-categorized — review and adjust before proceeding.
         </p>
       </div>
 
@@ -372,7 +387,7 @@ export default function UploadPage() {
                   {isDragActive ? 'Drop the file here' : 'Drag & drop your file here'}
                 </h3>
                 <p className="text-muted-foreground max-w-sm">
-                  Supports .csv, .xlsx, .xls — any steel plant heat log or production report.
+                  Supports .csv, .xlsx, .xls — steel plant heat logs, refinery production reports, or any industrial dataset.
                 </p>
                 <Button variant="outline" className="mt-4">Browse Files</Button>
               </>
@@ -400,7 +415,7 @@ export default function UploadPage() {
             <div className="flex items-start gap-2 text-sm text-muted-foreground bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 p-3 rounded-lg">
               <Info className="h-4 w-4 mt-0.5 flex-shrink-0 text-blue-500" />
               <p>
-                <strong className="text-blue-700 dark:text-blue-300">Controllable</strong> columns are the process variables you can adjust (oxygen, power, alloys, etc.). The ML model will train on these to predict <strong className="text-green-700 dark:text-green-300">Output</strong> metrics (yield, energy, final chemistry). <strong className="text-purple-700 dark:text-purple-300">Identifiers</strong> are excluded from training.
+                <strong className="text-blue-700 dark:text-blue-300">Controllable</strong> columns are the process variables you can adjust (energy inputs, feedstock, process parameters, etc.). The ML model will train on these to predict <strong className="text-green-700 dark:text-green-300">Output</strong> metrics (yield, utilization, throughput, energy consumption). <strong className="text-purple-700 dark:text-purple-300">Identifiers</strong> are excluded from training.
               </p>
             </div>
 
