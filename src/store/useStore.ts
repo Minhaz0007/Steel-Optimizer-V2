@@ -30,8 +30,22 @@ interface AppState {
   updateDatasetMapping: (datasetId: string, mappings: ColumnMapping[]) => void;
   removeDataset: (id: string) => void;
   addTrainedModel: (model: TrainedModel) => void;
+  removeTrainedModel: (id: string) => void;
   isLoading: boolean;
   setLoading: (loading: boolean) => void;
+  syncFromDB: () => Promise<void>;
+}
+
+function post(url: string, body: unknown) {
+  return fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).catch(() => {});
+}
+
+function del(url: string) {
+  return fetch(url, { method: 'DELETE' }).catch(() => {});
 }
 
 export const useStore = create<AppState>()(
@@ -43,12 +57,14 @@ export const useStore = create<AppState>()(
       isLoading: false,
       setLoading: (loading) => set({ isLoading: loading }),
       setDataset: (dataset) => set({ currentDataset: dataset }),
-      addDataset: (dataset) =>
+      addDataset: (dataset) => {
         set((state) => ({
           datasets: [...state.datasets, dataset],
           currentDataset: dataset,
-        })),
-      updateDatasetMapping: (datasetId, mappings) =>
+        }));
+        post('/api/datasets', dataset);
+      },
+      updateDatasetMapping: (datasetId, mappings) => {
         set((state) => {
           const updatedDatasets = state.datasets.map((d) =>
             d.id === datasetId ? { ...d, mappings } : d
@@ -58,26 +74,59 @@ export const useStore = create<AppState>()(
               ? { ...state.currentDataset, mappings }
               : state.currentDataset;
           return { datasets: updatedDatasets, currentDataset: updatedCurrent };
-        }),
-      removeDataset: (id) =>
+        });
+        fetch(`/api/datasets/${datasetId}/mappings`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ mappings }),
+        }).catch(() => {});
+      },
+      removeDataset: (id) => {
         set((state) => ({
           datasets: state.datasets.filter((d) => d.id !== id),
-          currentDataset:
-            state.currentDataset?.id === id ? null : state.currentDataset,
-        })),
-      addTrainedModel: (model) =>
+          currentDataset: state.currentDataset?.id === id ? null : state.currentDataset,
+        }));
+        del(`/api/datasets/${id}`);
+      },
+      addTrainedModel: (model) => {
         set((state) => ({
           trainedModels: [...state.trainedModels, model],
-        })),
+        }));
+        post('/api/models', { ...model, modelInstance: undefined });
+      },
+      removeTrainedModel: (id) => {
+        set((state) => ({
+          trainedModels: state.trainedModels.filter((m) => m.id !== id),
+        }));
+        del(`/api/models/${id}`);
+      },
+      syncFromDB: async () => {
+        try {
+          const [datasetsRes, modelsRes] = await Promise.all([
+            fetch('/api/datasets'),
+            fetch('/api/models'),
+          ]);
+          if (!datasetsRes.ok || !modelsRes.ok) return;
+          const [datasets, trainedModels] = await Promise.all([
+            datasetsRes.json(),
+            modelsRes.json(),
+          ]);
+          if (Array.isArray(datasets) && datasets.length > 0) {
+            set({ datasets, currentDataset: datasets[0] });
+          }
+          if (Array.isArray(trainedModels) && trainedModels.length > 0) {
+            set({ trainedModels });
+          }
+        } catch {
+          // DB unavailable — local state already loaded from localStorage
+        }
+      },
     }),
     {
       name: 'steel-app-storage',
       partialize: (state) => ({
         ...state,
-        // Don't persist complex model instances as they might not serialize well or be too large
-        // In a real app, we'd save metadata and reload the model from a file/server
-        // For this demo, we'll try to persist but might need to reconstruct
-        trainedModels: state.trainedModels.map(m => ({ ...m, modelInstance: null })) 
+        trainedModels: state.trainedModels.map((m) => ({ ...m, modelInstance: null })),
       }),
     }
   )
