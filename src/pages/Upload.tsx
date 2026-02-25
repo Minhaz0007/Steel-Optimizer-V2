@@ -160,15 +160,76 @@ const CATEGORY_LABELS: Record<ColumnMapping['category'], string> = {
 };
 
 // ─────────────────────────────────────────────
+// Exact column name overrides (checked before keyword matching)
+// Covers the standard 44-column steel plant dataset and common variants.
+// ─────────────────────────────────────────────
+const COLUMN_OVERRIDES: Record<string, ColumnMapping['category']> = {
+  // ── Identifiers ──────────────────────────────
+  date:                          'identifier',
+  furnace_id:                    'identifier',
+  batch_id:                      'identifier',
+  nameplate_capacity_tps:        'identifier',
+
+  // ── Controllable (process levers you can adjust) ──
+  num_furnaces_running:          'controllable',
+  labor_count:                   'controllable',
+  planned_runtime_hours:         'controllable',
+  avg_furnace_temperature_c:     'controllable',
+  power_consumption_mwh:         'controllable',
+  oxygen_flow_rate:              'controllable',
+  charge_weight_tons:            'controllable',
+  melting_time_minutes:          'controllable',
+  scrap_ratio_pct:               'controllable',
+  iron_ore_ratio_pct:            'controllable',
+  alloy_addition_kg:             'controllable',
+  flux_addition_kg:              'controllable',
+
+  // ── Uncontrollable (given conditions, not adjustable mid-heat) ──
+  shift:                         'uncontrollable',
+  product_grade:                 'uncontrollable',
+  previous_grade:                'uncontrollable',
+  grade_change_flag:             'uncontrollable',
+  operator_experience_level:     'uncontrollable',
+  unplanned_downtime_minutes:    'uncontrollable',
+  maintenance_status:            'uncontrollable',
+  temperature_variance:          'uncontrollable',
+  moisture_content_pct:          'uncontrollable',
+  raw_material_quality_index:    'uncontrollable',
+  ambient_temperature_c:         'uncontrollable',
+  humidity_pct:                  'uncontrollable',
+  power_supply_stability_index:  'uncontrollable',
+  changeover_downtime_penalty_min: 'uncontrollable',
+  changeover_scrap_penalty_pct:  'uncontrollable',
+
+  // ── Output (KPIs to predict and optimise) ────
+  tap_to_tap_time_minutes:       'output',
+  steel_output_tons:             'output',
+  scrap_rate_pct:                'output',
+  scrap_generated_tons:          'output',
+  yield_pct:                     'output',
+  energy_cost_usd:               'output',
+  changeover_cost_usd:           'output',
+  production_cost_usd:           'output',
+  carbon_pct:                    'output',
+  impurity_index:                'output',
+  quality_grade_pass:            'output',
+  rework_required:               'output',
+  plant_total_output_tons:       'output',
+};
+
+// ─────────────────────────────────────────────
 // Auto-detect column category from name
 // ─────────────────────────────────────────────
 function detectCategory(colName: string): ColumnMapping['category'] {
   const lower = colName.toLowerCase().replace(/[\s\-\.]/g, '_');
 
+  // Priority 0: exact override map (fastest, most precise)
+  if (lower in COLUMN_OVERRIDES) return COLUMN_OVERRIDES[lower];
+
   // Priority 1: Identifier
   if (STEEL_KEYWORDS.identifier.some(kw => lower.includes(kw))) return 'identifier';
   // Simple date/time/id heuristics
-  if (/\b(date|time|datetime|timestamp|shift)\b/.test(lower)) return 'identifier';
+  if (/\b(date|time|datetime|timestamp)\b/.test(lower)) return 'identifier';
   if (/(_id|_no|_num|_#|number|index|sequence)\b/.test(lower)) return 'identifier';
 
   // Priority 2: Output
@@ -415,7 +476,7 @@ export default function UploadPage() {
             <div className="flex items-start gap-2 text-sm text-muted-foreground bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 p-3 rounded-lg">
               <Info className="h-4 w-4 mt-0.5 flex-shrink-0 text-blue-500" />
               <p>
-                <strong className="text-blue-700 dark:text-blue-300">Controllable</strong> columns are the process variables you can adjust (energy inputs, feedstock, process parameters, etc.). The ML model will train on these to predict <strong className="text-green-700 dark:text-green-300">Output</strong> metrics (yield, utilization, throughput, energy consumption). <strong className="text-purple-700 dark:text-purple-300">Identifiers</strong> are excluded from training.
+                The ML model trains on <strong className="text-blue-700 dark:text-blue-300">Controllable</strong> (process levers you can adjust: temperature, charge mix, power, gas flows) <em>and</em> <strong className="text-gray-700 dark:text-gray-300">Uncontrollable</strong> (given conditions: material quality, ambient factors, operator level) columns together to predict <strong className="text-green-700 dark:text-green-300">Output</strong> KPIs (yield, cost, quality). <strong className="text-purple-700 dark:text-purple-300">Identifiers</strong> are excluded. Feature importance then reveals which <em>controllable</em> levers most drive each output.
               </p>
             </div>
 
