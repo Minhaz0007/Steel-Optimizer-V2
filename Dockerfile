@@ -22,9 +22,11 @@ ENV PORT=8080
 COPY package*.json ./
 RUN npm ci --omit=dev && npm install tsx
 
-# Copy Vite-built frontend and the TypeScript server
+# Copy Vite-built frontend, the TypeScript server, and the ML engine
+# (ml-engine.ts is imported by server.ts at runtime via tsx)
 COPY --from=builder /app/dist ./dist
 COPY server.ts ./
+COPY --from=builder /app/src/lib ./src/lib
 
 EXPOSE 8080
 CMD ["./node_modules/.bin/tsx", "server.ts"]
