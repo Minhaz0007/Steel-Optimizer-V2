@@ -146,10 +146,10 @@ const STEEL_KEYWORDS: Record<ColumnMapping['category'], string[]> = {
 
 // Category color mapping
 const CATEGORY_COLORS: Record<ColumnMapping['category'], string> = {
-  identifier:     'bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-300',
-  controllable:   'bg-blue-100  text-blue-800  dark:bg-blue-900/30  dark:text-blue-300',
-  output:         'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300',
-  uncontrollable: 'bg-gray-100  text-gray-700  dark:bg-gray-800      dark:text-gray-300',
+  identifier:     'bg-purple-200 text-purple-900 dark:bg-purple-800/60 dark:text-purple-200',
+  controllable:   'bg-blue-200   text-blue-900   dark:bg-blue-800/60   dark:text-blue-200',
+  output:         'bg-green-200  text-green-900  dark:bg-green-800/60  dark:text-green-200',
+  uncontrollable: 'bg-amber-200  text-amber-900  dark:bg-amber-800/60  dark:text-amber-200',
 };
 
 const CATEGORY_LABELS: Record<ColumnMapping['category'], string> = {
@@ -537,15 +537,15 @@ export default function UploadPage() {
                   <Button variant="ghost" size="sm" onClick={() => setParsedData(null)} className="text-destructive">
                     Remove File
                   </Button>
-                  <Button onClick={handleSave} size="lg" disabled={mappings.filter(m => m.category === 'controllable').length === 0 || mappings.filter(m => m.category === 'output').length === 0}>
+                  <Button onClick={handleSave} size="lg">
                     Proceed to Analysis <ArrowRight className="ml-2 h-4 w-4" />
                   </Button>
                 </div>
                 {mappings.filter(m => m.category === 'controllable').length === 0 && (
-                  <p className="text-xs text-destructive mt-2 text-right">At least one Controllable column is required for ML training.</p>
+                  <p className="text-xs text-amber-600 dark:text-amber-400 mt-2 text-right">Tip: Mark at least one column as Controllable for ML training.</p>
                 )}
                 {mappings.filter(m => m.category === 'output').length === 0 && (
-                  <p className="text-xs text-destructive mt-2 text-right">At least one Output column is required as the prediction target.</p>
+                  <p className="text-xs text-amber-600 dark:text-amber-400 mt-2 text-right">Tip: Mark at least one column as Output as the prediction target.</p>
                 )}
               </CardContent>
             </Card>
