@@ -9,7 +9,7 @@ import { Progress } from '@/components/ui/progress';
 import { toast } from 'sonner';
 import { trainModels, TrainedModel } from '@/lib/ml-engine';
 import { motion } from 'framer-motion';
-import { Loader2, Trophy, ArrowRight, TrendingUp, AlertCircle } from 'lucide-react';
+import { Loader2, Trophy, ArrowRight, TrendingUp, AlertCircle, ChevronDown, ChevronUp } from 'lucide-react';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell
 } from 'recharts';
@@ -20,6 +20,73 @@ const MODEL_COLORS: Record<string, string> = {
   'Random Forest':     'hsl(24, 94%, 53%)',
   'Gradient Boosting': 'hsl(183, 95%, 38%)',
 };
+
+// ---------------------------------------------------------------------------
+// Goal presets — keywords are matched against output column names
+// ---------------------------------------------------------------------------
+const GOAL_PRESETS = [
+  {
+    id: 'yield',
+    icon: '🏭',
+    label: 'Maximize Yield',
+    description: 'Find the settings that produce the most steel per heat.',
+    keywords: ['yield', 'output', 'production', 'throughput', 'ton', 'weight'],
+  },
+  {
+    id: 'energy',
+    icon: '⚡',
+    label: 'Minimize Energy',
+    description: 'Predict power / energy consumption to lower operating cost.',
+    keywords: ['energy', 'power', 'kwh', 'consumption', 'electricity', 'fuel'],
+  },
+  {
+    id: 'temperature',
+    icon: '🌡️',
+    label: 'Control Temperature',
+    description: 'Predict furnace or tap temperature for stable process control.',
+    keywords: ['temp', 'temperature', 'heat', 'furnace', 'tap'],
+  },
+  {
+    id: 'quality',
+    icon: '⭐',
+    label: 'Improve Quality',
+    description: 'Predict defect rate, hardness, or grade to raise steel quality.',
+    keywords: ['quality', 'defect', 'hardness', 'grade', 'tensile', 'strength', 'purity', 'carbon'],
+  },
+] as const;
+
+const STEPS = [
+  {
+    number: 1,
+    title: 'Pick a goal (or configure manually)',
+    detail: 'Click one of the goal presets below. It will automatically select the most relevant output column as the target variable. You can also skip presets and choose manually.',
+  },
+  {
+    number: 2,
+    title: 'Review the target variable',
+    detail: 'The "Target Variable" is what you want the AI to predict (e.g. Yield, Temperature). Confirm the right column is selected in the Configuration panel on the left.',
+  },
+  {
+    number: 3,
+    title: 'Choose input features (optional)',
+    detail: 'Input features are the process parameters the AI learns from. By default all controllable and uncontrollable numeric columns are used — this is the recommended setting. Only un-check columns you are sure are irrelevant.',
+  },
+  {
+    number: 4,
+    title: 'Click "Start Training (3 Models)"',
+    detail: 'The app will train three different AI models simultaneously: Linear Regression (fast baseline), Random Forest, and Gradient Boosting. Training usually takes a few seconds.',
+  },
+  {
+    number: 5,
+    title: 'Read the results',
+    detail: 'After training, the best model is highlighted. Look at the Accuracy % — above 85 % is generally good. Click "Feature Importance" to see which process parameters matter most.',
+  },
+  {
+    number: 6,
+    title: 'Go to Predictions',
+    detail: 'Once satisfied with the accuracy, click "Go to Predictions" to use the trained models to optimise your plant settings for a target outcome.',
+  },
+];
 
 function MetricPill({ label, value, unit = '' }: { label: string; value: number | string; unit?: string }) {
   return (
@@ -53,6 +120,31 @@ export default function Training() {
   const [results, setResults] = useState<TrainedModel[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'comparison' | 'importance'>('comparison');
+  const [activePreset, setActivePreset] = useState<string | null>(null);
+  const [stepsOpen, setStepsOpen] = useState(true);
+
+  const applyPreset = (presetId: string) => {
+    if (!currentDataset) return;
+    const preset = GOAL_PRESETS.find(p => p.id === presetId);
+    if (!preset) return;
+
+    const outputCols = currentDataset.mappings.filter(m => m.category === 'output');
+    // Try to find a column whose name contains any of the preset keywords
+    const match = outputCols.find(col =>
+      preset.keywords.some(kw => col.columnName.toLowerCase().includes(kw))
+    );
+    const chosen = match ?? outputCols[0];
+
+    if (!chosen) {
+      toast.error('No output columns found. Go to Upload → set at least one column to "Output".');
+      return;
+    }
+
+    setTargetVar(chosen.columnName);
+    setSelectedFeatures([]); // use all features
+    setActivePreset(presetId);
+    toast.success(`Preset applied — target: "${chosen.columnName}". All features selected. Click Start Training when ready.`);
+  };
 
   const handleTrain = async () => {
     if (!currentDataset || !targetVar) return;
@@ -143,6 +235,75 @@ export default function Training() {
         </p>
       </div>
 
+      {/* ── Step-by-step guide ─────────────────────────────────────────────── */}
+      <Card>
+        <button
+          type="button"
+          className="w-full text-left"
+          onClick={() => setStepsOpen(o => !o)}
+        >
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <div>
+              <CardTitle className="text-base">How to train your first model — step by step</CardTitle>
+              <CardDescription className="mt-0.5">New here? Follow these 6 steps.</CardDescription>
+            </div>
+            {stepsOpen
+              ? <ChevronUp className="h-5 w-5 text-muted-foreground shrink-0" />
+              : <ChevronDown className="h-5 w-5 text-muted-foreground shrink-0" />}
+          </CardHeader>
+        </button>
+
+        {stepsOpen && (
+          <CardContent className="pt-0">
+            <ol className="space-y-3">
+              {STEPS.map(step => (
+                <li key={step.number} className="flex gap-3">
+                  <span className="flex-shrink-0 w-7 h-7 rounded-full bg-primary text-primary-foreground text-sm font-bold flex items-center justify-center">
+                    {step.number}
+                  </span>
+                  <div>
+                    <p className="font-medium text-sm">{step.title}</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">{step.detail}</p>
+                  </div>
+                </li>
+              ))}
+            </ol>
+          </CardContent>
+        )}
+      </Card>
+
+      {/* ── Goal presets ───────────────────────────────────────────────────── */}
+      <div className="space-y-3">
+        <div>
+          <h2 className="text-base font-semibold">Recommended presets — pick your goal</h2>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            Click a preset to auto-fill the configuration below. You can still adjust anything afterwards.
+          </p>
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          {GOAL_PRESETS.map(preset => {
+            const isActive = activePreset === preset.id;
+            return (
+              <button
+                key={preset.id}
+                type="button"
+                onClick={() => applyPreset(preset.id)}
+                className={`
+                  rounded-xl border p-4 text-left transition-all hover:shadow-md focus:outline-none focus-visible:ring-2 focus-visible:ring-primary
+                  ${isActive
+                    ? 'border-primary bg-primary/8 shadow-sm ring-1 ring-primary'
+                    : 'border-border bg-card hover:border-primary/40'}
+                `}
+              >
+                <span className="text-2xl">{preset.icon}</span>
+                <p className={`mt-2 text-sm font-semibold ${isActive ? 'text-primary' : ''}`}>{preset.label}</p>
+                <p className="mt-1 text-xs text-muted-foreground leading-snug">{preset.description}</p>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         {/* Config panel */}
         <Card className="lg:col-span-1 h-fit">
@@ -153,7 +314,7 @@ export default function Training() {
           <CardContent className="space-y-6">
             <div className="space-y-2">
               <Label>Target Variable (to predict)</Label>
-              <Select onValueChange={(v) => { setTargetVar(v); setSelectedFeatures([]); }} value={targetVar}>
+              <Select onValueChange={(v) => { setTargetVar(v); setSelectedFeatures([]); setActivePreset(null); }} value={targetVar}>
                 <SelectTrigger>
                   <SelectValue placeholder="Select output variable..." />
                 </SelectTrigger>
