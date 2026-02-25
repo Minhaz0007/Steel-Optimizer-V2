@@ -30,6 +30,16 @@ function MetricPill({ label, value, unit = '' }: { label: string; value: number 
   );
 }
 
+function CVMetricPill({ label, mean, std, unit = '' }: { label: string; mean: number; std: number; unit?: string }) {
+  return (
+    <div className="text-center p-3 bg-background rounded-lg border">
+      <div className="text-xs text-muted-foreground mb-1">{label}</div>
+      <div className="text-lg font-bold">{mean.toFixed(3)}{unit}</div>
+      <div className="text-xs text-muted-foreground">± {std.toFixed(3)}{unit}</div>
+    </div>
+  );
+}
+
 export default function Training() {
   const currentDataset = useStore((state) => state.currentDataset);
   const addTrainedModel = useStore((state) => state.addTrainedModel);
@@ -73,23 +83,14 @@ export default function Training() {
     };
 
     try {
-      setProgress(15);
-      setProgressLabel('Training Linear Regression...');
-      await new Promise(r => setTimeout(r, 100));
-
-      setProgress(35);
-      setProgressLabel('Training Random Forest (100 trees)...');
-      await new Promise(r => setTimeout(r, 100));
-
-      const trainedModels = await trainModels(currentDataset.data, config);
-
-      setProgress(80);
-      setProgressLabel('Training Gradient Boosting (80 rounds)...');
-      await new Promise(r => setTimeout(r, 100));
-
-      setProgress(95);
-      setProgressLabel('Computing feature importance...');
-      await new Promise(r => setTimeout(r, 100));
+      const trainedModels = await trainModels(
+        currentDataset.data,
+        config,
+        (label, pct) => {
+          setProgressLabel(label);
+          setProgress(pct);
+        }
+      );
 
       // Save ALL trained models to the store
       trainedModels.forEach(m => addTrainedModel(m));
@@ -256,17 +257,39 @@ export default function Training() {
                   <CardDescription>Target: <strong>{bestModel.config.targetVariable}</strong> · {bestModel.config.features.length} features</CardDescription>
                 </CardHeader>
                 <CardContent>
+                  {/* Train / Test metrics */}
+                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">Train / Test split (80 / 20)</p>
                   <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
                     <MetricPill label="R² Score" value={bestModel.metrics.r2} />
                     <MetricPill label="RMSE" value={bestModel.metrics.rmse} />
                     <MetricPill label="MAE" value={bestModel.metrics.mae} />
                     <MetricPill label="MAPE" value={bestModel.metrics.mape} unit="%" />
-                    <MetricPill
-                      label="Accuracy"
-                      value={bestModel.metrics.accuracy.toFixed(1)}
-                      unit="%"
-                    />
+                    <MetricPill label="Accuracy" value={bestModel.metrics.accuracy.toFixed(1)} unit="%" />
                   </div>
+
+                  {/* Cross-Validation metrics */}
+                  {bestModel.cvMetrics && (
+                    <div className="mt-4 p-3 rounded-lg bg-muted/40 border">
+                      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-2">
+                        5-Fold Cross-Validation — reliability check
+                      </p>
+                      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+                        <CVMetricPill label="CV R²"       mean={bestModel.cvMetrics.mean.r2}       std={bestModel.cvMetrics.std.r2} />
+                        <CVMetricPill label="CV RMSE"     mean={bestModel.cvMetrics.mean.rmse}     std={bestModel.cvMetrics.std.rmse} />
+                        <CVMetricPill label="CV MAE"      mean={bestModel.cvMetrics.mean.mae}      std={bestModel.cvMetrics.std.mae} />
+                        <CVMetricPill label="CV MAPE"     mean={bestModel.cvMetrics.mean.mape}     std={bestModel.cvMetrics.std.mape} unit="%" />
+                        <CVMetricPill label="CV Accuracy" mean={bestModel.cvMetrics.mean.accuracy} std={bestModel.cvMetrics.std.accuracy} unit="%" />
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-2">
+                        Mean ± std across {bestModel.cvMetrics.folds} folds.
+                        Low std = stable model. CV R² close to Train R² = no overfitting.
+                        {bestModel.metrics.r2 - bestModel.cvMetrics.mean.r2 > 0.1 && (
+                          <span className="text-amber-600 dark:text-amber-400 font-medium"> ⚠ Gap &gt;0.10 detected — model may be overfitting.</span>
+                        )}
+                      </p>
+                    </div>
+                  )}
+
                   <p className="text-xs text-muted-foreground mt-3">
                     * Accuracy = 100 − MAPE. R² closest to 1.0 is ideal. All 3 models are saved for predictions.
                   </p>
@@ -328,16 +351,21 @@ export default function Training() {
                       <table className="w-full text-sm">
                         <thead className="bg-muted/50">
                           <tr>
-                            {['Model', 'R²', 'RMSE', 'MAE', 'MAPE', 'Accuracy'].map(h => (
-                              <th key={h} className="h-9 px-3 text-left font-medium text-muted-foreground">{h}</th>
+                            {['Model', 'R²', 'CV R² (mean±std)', 'RMSE', 'MAE', 'MAPE', 'Accuracy'].map(h => (
+                              <th key={h} className="h-9 px-3 text-left font-medium text-muted-foreground whitespace-nowrap">{h}</th>
                             ))}
                           </tr>
                         </thead>
                         <tbody>
                           {sortedResults.map((r, i) => (
                             <tr key={r.id} className={i === 0 ? 'bg-primary/5 font-medium' : 'hover:bg-muted/30'}>
-                              <td className="px-3 py-2">{i === 0 ? '🏆 ' : ''}{r.type}</td>
+                              <td className="px-3 py-2 whitespace-nowrap">{i === 0 ? '🏆 ' : ''}{r.type}</td>
                               <td className="px-3 py-2">{r.metrics.r2.toFixed(4)}</td>
+                              <td className="px-3 py-2 whitespace-nowrap">
+                                {r.cvMetrics
+                                  ? <><span className="font-medium">{r.cvMetrics.mean.r2.toFixed(3)}</span><span className="text-muted-foreground"> ±{r.cvMetrics.std.r2.toFixed(3)}</span></>
+                                  : '—'}
+                              </td>
                               <td className="px-3 py-2">{r.metrics.rmse.toFixed(3)}</td>
                               <td className="px-3 py-2">{r.metrics.mae.toFixed(3)}</td>
                               <td className="px-3 py-2">{r.metrics.mape.toFixed(2)}%</td>
