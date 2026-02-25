@@ -74,10 +74,13 @@ export const useStore = create<AppState>()(
       name: 'steel-app-storage',
       partialize: (state) => ({
         ...state,
-        // Don't persist complex model instances as they might not serialize well or be too large
-        // In a real app, we'd save metadata and reload the model from a file/server
-        // For this demo, we'll try to persist but might need to reconstruct
-        trainedModels: state.trainedModels.map(m => ({ ...m, modelInstance: null })) 
+        // Exclude raw data rows — too large for localStorage (causes QuotaExceededError)
+        datasets: state.datasets.map(d => ({ ...d, data: [] })),
+        currentDataset: state.currentDataset
+          ? { ...state.currentDataset, data: [] }
+          : null,
+        // Don't persist model instances (not serialisable)
+        trainedModels: state.trainedModels.map(m => ({ ...m, modelInstance: null })),
       }),
     }
   )
