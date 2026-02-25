@@ -56,11 +56,11 @@ export default function Training() {
     const features = selectedFeatures.length > 0
       ? selectedFeatures
       : currentDataset.mappings
-          .filter(m => m.category === 'controllable' && m.dataType === 'number' && m.columnName !== targetVar)
+          .filter(m => (m.category === 'controllable' || m.category === 'uncontrollable') && m.dataType === 'number' && m.columnName !== targetVar)
           .map(m => m.columnName);
 
     if (features.length === 0) {
-      toast.error('No controllable numeric features found. Please mark at least one column as Controllable.');
+      toast.error('No numeric feature columns found. Please mark at least one column as Controllable or Uncontrollable.');
       setIsTraining(false);
       return;
     }
@@ -118,9 +118,9 @@ export default function Training() {
     );
   }
 
-  const outputVars = currentDataset.mappings.filter(m => m.category === 'output' || m.category === 'controllable');
+  const outputVars = currentDataset.mappings.filter(m => m.category === 'output');
   const featureVars = currentDataset.mappings.filter(
-    m => m.category !== 'identifier' && m.columnName !== targetVar && m.dataType === 'number'
+    m => (m.category === 'controllable' || m.category === 'uncontrollable') && m.columnName !== targetVar && m.dataType === 'number'
   );
 
   const sortedResults = [...results].sort((a, b) => b.metrics.r2 - a.metrics.r2);
@@ -170,12 +170,12 @@ export default function Training() {
             <div className="space-y-2">
               <Label>
                 Input Features
-                <span className="ml-1 text-xs text-muted-foreground font-normal">(numeric controllable columns)</span>
+                <span className="ml-1 text-xs text-muted-foreground font-normal">(controllable + uncontrollable numeric)</span>
               </Label>
               <div className="border rounded-md p-3 max-h-52 overflow-y-auto space-y-2">
                 {featureVars.length === 0 && (
                   <p className="text-xs text-muted-foreground text-center py-4">
-                    No numeric controllable columns found. Adjust column categories in the Upload page.
+                    No numeric feature columns found. Adjust column categories in the Upload page.
                   </p>
                 )}
                 {featureVars.map(v => (
@@ -188,14 +188,21 @@ export default function Training() {
                         else setSelectedFeatures(prev => prev.filter(f => f !== v.columnName));
                       }}
                     />
-                    <label htmlFor={v.columnName} className="text-sm leading-none cursor-pointer">
+                    <label htmlFor={v.columnName} className="text-sm leading-none cursor-pointer flex items-center gap-1.5">
                       {v.columnName}
+                      <span className={`text-[10px] px-1 py-0.5 rounded font-medium ${
+                        v.category === 'controllable'
+                          ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300'
+                          : 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400'
+                      }`}>
+                        {v.category === 'controllable' ? 'ctrl' : 'unctrl'}
+                      </span>
                     </label>
                   </div>
                 ))}
               </div>
               <p className="text-xs text-muted-foreground">
-                Leave all unchecked to auto-select all controllable numeric columns.
+                Leave all unchecked to auto-select all controllable + uncontrollable numeric columns.
               </p>
             </div>
 
