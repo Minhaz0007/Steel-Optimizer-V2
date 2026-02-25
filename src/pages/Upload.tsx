@@ -372,12 +372,21 @@ export default function UploadPage() {
 
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
+    onDropRejected: (rejections) => {
+      const err = rejections[0]?.errors[0];
+      if (err?.code === 'file-too-large') {
+        toast.error('File exceeds the 5 GB limit.');
+      } else {
+        toast.error(err?.message ?? 'File rejected.');
+      }
+    },
     accept: {
       'text/csv': ['.csv'],
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'],
       'application/vnd.ms-excel': ['.xls'],
     },
     maxFiles: 1,
+    maxSize: 5 * 1024 * 1024 * 1024, // 5 GB
   });
 
   const handleCategoryChange = (colName: string, newCat: ColumnMapping['category']) => {
@@ -448,7 +457,7 @@ export default function UploadPage() {
                   {isDragActive ? 'Drop the file here' : 'Drag & drop your file here'}
                 </h3>
                 <p className="text-muted-foreground max-w-sm">
-                  Supports .csv, .xlsx, .xls — steel plant heat logs, refinery production reports, or any industrial dataset.
+                  Supports .csv, .xlsx, .xls up to 5 GB — steel plant heat logs, refinery production reports, or any industrial dataset.
                 </p>
                 <Button variant="outline" className="mt-4">Browse Files</Button>
               </>
