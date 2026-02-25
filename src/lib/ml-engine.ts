@@ -165,6 +165,8 @@ class DecisionStump {
 
 // ============================================================
 // Gradient Boosting Regressor (XGBoost-like)
+// train() is async and yields every 10 rounds so the browser
+// can repaint and the progress bar stays responsive.
 // ============================================================
 class GradientBoostingRegressor {
   initialPred: number = 0;
@@ -177,13 +179,18 @@ class GradientBoostingRegressor {
     this.learningRate = options.learningRate ?? 0.05;
   }
 
-  train(X: number[][], y: number[]) {
+  async train(X: number[][], y: number[]): Promise<void> {
     const n = y.length;
     this.initialPred = y.reduce((a, b) => a + b, 0) / n;
     const preds = new Array(n).fill(this.initialPred);
     const residuals = y.map((v, i) => v - preds[i]);
 
     for (let iter = 0; iter < this.nEstimators; iter++) {
+      // Yield to the event loop every 10 iterations so the browser can repaint
+      if (iter % 10 === 0) {
+        await new Promise<void>(r => setTimeout(r, 0));
+      }
+
       const stump = new DecisionStump();
       stump.train(X, residuals);
       this.estimators.push(stump);
@@ -229,10 +236,15 @@ class GradientBoostingRegressor {
 
 // ============================================================
 // Metrics Calculation
+// All outputs are sanitized: NaN / ±Infinity become 0.
 // ============================================================
 function calculateMetrics(actual: number[], predicted: number[]): ModelMetrics {
   const n = actual.length;
   if (n === 0) return { rmse: 0, mae: 0, r2: 0, mape: 0, accuracy: 0 };
+
+  // Guard: replace NaN or ±Infinity (from degenerate data) with 0
+  const sanitize = (v: number): number =>
+    isFinite(v) && !isNaN(v) ? v : 0;
 
   let ssRes = 0;
   let absError = 0;
@@ -252,28 +264,35 @@ function calculateMetrics(actual: number[], predicted: number[]): ModelMetrics {
   const meanActual = sumActual / n;
   const ssTot = actual.reduce((acc, v) => acc + (v - meanActual) ** 2, 0);
 
-  const rmse = Math.sqrt(ssRes / n);
-  const mae = absError / n;
-  const r2 = ssTot === 0 ? 0 : Math.max(0, 1 - ssRes / ssTot);
-  const mape = (absPctError / n) * 100;
-  const accuracy = Math.max(0, Math.min(100, 100 - mape));
+  const rmse     = sanitize(Math.sqrt(ssRes / n));
+  const mae      = sanitize(absError / n);
+  const r2       = sanitize(ssTot === 0 ? 0 : Math.max(0, 1 - ssRes / ssTot));
+  const mape     = sanitize((absPctError / n) * 100);
+  const accuracy = sanitize(Math.max(0, Math.min(100, 100 - mape)));
 
   return { rmse, mae, r2, mape, accuracy };
 }
 
 // ============================================================
 // Permutation Feature Importance (model-agnostic)
+// async: yields to the event loop between each feature so the
+// browser stays responsive during long importance computations.
 // ============================================================
-function computePermutationImportance(
+async function computePermutationImportance(
   predictFn: (X: number[][]) => number[],
   X_test: number[][],
   y_test: number[],
   features: string[],
   baselineRMSE: number
-): { feature: string; importance: number }[] {
+): Promise<{ feature: string; importance: number }[]> {
   const baseMSE = baselineRMSE ** 2;
+  const importances: { feature: string; importance: number }[] = [];
 
-  const importances = features.map((feat, f) => {
+  for (let f = 0; f < features.length; f++) {
+    // Yield before each feature so the browser can repaint
+    await new Promise<void>(r => setTimeout(r, 0));
+
+    const feat = features[f];
     const X_shuffled = X_test.map(row => [...row]);
     const featureVals = X_shuffled.map(row => row[f]);
 
@@ -296,8 +315,8 @@ function computePermutationImportance(
     }
     const shuffledMSE = shuffledSSE / y_test.length;
     const importance = Math.max(0, shuffledMSE - baseMSE);
-    return { feature: feat, importance };
-  });
+    importances.push({ feature: feat, importance });
+  }
 
   const total = importances.reduce((a, b) => a + b.importance, 0);
   return importances
@@ -310,21 +329,25 @@ function computePermutationImportance(
 
 // ============================================================
 // 5-Fold Cross-Validation
-// Runs on the full (shuffled) dataset.
-// Each fold fits its own scaler (Linear only) to prevent leakage.
-// Returns mean ± std of all metrics across folds.
+// async: yields between folds and uses lighter estimator counts
+// (RF: 30, GBM: 30) to stay responsive without blocking the UI.
+// The reported CV metrics are for reliability-checking only —
+// the final saved models still use the full estimator counts.
 // ============================================================
-function runKFoldCV(
+async function runKFoldCV(
   X: number[][],
   y: number[],
   modelType: string,
   nFolds: number = 5
-): { mean: ModelMetrics; std: ModelMetrics } {
+): Promise<{ mean: ModelMetrics; std: ModelMetrics }> {
   const n = X.length;
   const foldSize = Math.floor(n / nFolds);
   const foldMetrics: ModelMetrics[] = [];
 
   for (let fold = 0; fold < nFolds; fold++) {
+    // Yield BEFORE heavy work so the browser can repaint with the current label
+    await new Promise<void>(r => setTimeout(r, 0));
+
     const valStart = fold * foldSize;
     const valEnd = fold === nFolds - 1 ? n : valStart + foldSize;
 
@@ -353,14 +376,15 @@ function runKFoldCV(
         seed: 42 + fold,
         maxFeatures: Math.min(0.8, Math.max(0.3, Math.sqrt(nFeatures) / nFeatures)),
         replacement: true,
-        nEstimators: 100,
+        nEstimators: 30, // reduced from 100 for CV speed; final model uses 100
       });
       rf.train(X_tr, y_tr);
       preds = rf.predict(X_val) as number[];
 
     } else {
-      const gbm = new GradientBoostingRegressor({ nEstimators: 80, learningRate: 0.05 });
-      gbm.train(X_tr, y_tr);
+      const gbm = new GradientBoostingRegressor({ nEstimators: 30, learningRate: 0.05 });
+      // reduced from 80 for CV speed; final model uses 80
+      await gbm.train(X_tr, y_tr);
       preds = gbm.predict(X_val);
     }
 
@@ -383,7 +407,9 @@ function runKFoldCV(
 
 // ============================================================
 // Main Training Function
-// onProgress(label, pct) fires between steps so the UI stays responsive.
+// Each heavy stage is preceded by a tick (label + event-loop
+// yield) and then awaited, so the progress bar updates smoothly
+// and the browser never appears frozen.
 // ============================================================
 export async function trainModels(
   data: any[],
@@ -394,7 +420,7 @@ export async function trainModels(
 
   const tick = (label: string, pct: number) => {
     onProgress?.(label, pct);
-    // Yield to the event loop so the browser can repaint
+    // Yield to the event loop so the browser can repaint before heavy work starts
     return new Promise<void>(r => setTimeout(r, 0));
   };
 
@@ -458,13 +484,16 @@ export async function trainModels(
     const predictions = raw.map((p: number[]) => p[0]);
     const metrics = calculateMetrics(y_test, predictions);
 
-    const importance = computePermutationImportance(
+    // Announce importance BEFORE the async computation begins
+    await tick('Computing feature importance (Linear)…', 15);
+    const importance = await computePermutationImportance(
       (Xs) => (mlr.predict(scaler.transform(Xs)) as number[][]).map((p: number[]) => p[0]),
       X_test, y_test, features, metrics.rmse
     );
 
+    // Announce CV BEFORE the async computation begins
     await tick('Cross-validating Linear Regression (5 folds)…', 20);
-    const cv = runKFoldCV(X_all, y_all, 'linear');
+    const cv = await runKFoldCV(X_all, y_all, 'linear');
 
     results.push({
       id: 'linear-' + Date.now(),
@@ -493,13 +522,16 @@ export async function trainModels(
     const predictions = rf.predict(X_test) as number[];
     const metrics = calculateMetrics(y_test, predictions);
 
-    const importance = computePermutationImportance(
+    // Announce importance BEFORE the async computation begins
+    await tick('Computing feature importance (Random Forest)…', 48);
+    const importance = await computePermutationImportance(
       (Xs) => rf.predict(Xs) as number[],
       X_test, y_test, features, metrics.rmse
     );
 
+    // Announce CV BEFORE the async computation begins
     await tick('Cross-validating Random Forest (5 folds)…', 55);
-    const cv = runKFoldCV(X_all, y_all, 'rf');
+    const cv = await runKFoldCV(X_all, y_all, 'rf');
 
     results.push({
       id: 'rf-' + Date.now(),
@@ -518,17 +550,20 @@ export async function trainModels(
     await tick('Training Gradient Boosting (80 rounds)…', 65);
 
     const gbm = new GradientBoostingRegressor({ nEstimators: 80, learningRate: 0.05 });
-    gbm.train(X_train, y_train);
+    await gbm.train(X_train, y_train); // async — yields every 10 rounds
     const predictions = gbm.predict(X_test);
     const metrics = calculateMetrics(y_test, predictions);
 
-    const importance = computePermutationImportance(
+    // Announce importance BEFORE the async computation begins
+    await tick('Computing feature importance (Gradient Boosting)…', 75);
+    const importance = await computePermutationImportance(
       (Xs) => gbm.predict(Xs),
       X_test, y_test, features, metrics.rmse
     );
 
+    // Announce CV BEFORE the async computation begins
     await tick('Cross-validating Gradient Boosting (5 folds)…', 80);
-    const cv = runKFoldCV(X_all, y_all, 'xgboost');
+    const cv = await runKFoldCV(X_all, y_all, 'xgboost');
 
     results.push({
       id: 'xgb-' + Date.now(),

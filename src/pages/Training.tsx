@@ -25,6 +25,7 @@ const MODEL_COLORS: Record<string, string> = {
 // Goal presets — keywords are matched against output column names
 // ---------------------------------------------------------------------------
 const GOAL_PRESETS = [
+  // ── Row 1 — core production goals ──────────────────────────
   {
     id: 'yield',
     icon: '🏭',
@@ -37,21 +38,50 @@ const GOAL_PRESETS = [
     icon: '⚡',
     label: 'Minimize Energy',
     description: 'Predict power / energy consumption to lower operating cost.',
-    keywords: ['energy', 'power', 'kwh', 'consumption', 'electricity', 'fuel'],
+    keywords: ['energy', 'power', 'kwh', 'consumption', 'electricity', 'fuel', 'specific_energy'],
   },
   {
     id: 'temperature',
     icon: '🌡️',
-    label: 'Control Temperature',
+    label: 'Tap Temperature',
     description: 'Predict furnace or tap temperature for stable process control.',
-    keywords: ['temp', 'temperature', 'heat', 'furnace', 'tap'],
+    keywords: ['temp', 'temperature', 'heat', 'furnace', 'tap', 'tapping', 'superheat'],
   },
   {
     id: 'quality',
     icon: '⭐',
     label: 'Improve Quality',
     description: 'Predict defect rate, hardness, or grade to raise steel quality.',
-    keywords: ['quality', 'defect', 'hardness', 'grade', 'tensile', 'strength', 'purity', 'carbon'],
+    keywords: ['quality', 'defect', 'hardness', 'grade', 'tensile', 'strength', 'purity'],
+  },
+  // ── Row 2 — advanced steel process goals ───────────────────
+  {
+    id: 'heat_time',
+    icon: '⏱️',
+    label: 'Reduce Heat Time',
+    description: 'Minimise tap-to-tap cycle time to increase furnace throughput.',
+    keywords: ['time', 'duration', 'cycle', 'tap-to-tap', 'tap_to_tap', 'ttt', 'minutes', 'taptime'],
+  },
+  {
+    id: 'alloy_cost',
+    icon: '💰',
+    label: 'Minimize Alloy Cost',
+    description: 'Predict alloy and flux consumption to cut raw-material spend.',
+    keywords: ['cost', 'alloy', 'lime', 'flux', 'dolomite', 'consumption', 'charge', 'scrap'],
+  },
+  {
+    id: 'carbon',
+    icon: '🔩',
+    label: 'Carbon Content',
+    description: 'Predict endpoint carbon to hit chemistry and grade targets.',
+    keywords: ['carbon', 'c%', 'c_pct', 'chemistry', 'composition', 'endpoint', 'analysis', 'carb'],
+  },
+  {
+    id: 'oxygen',
+    icon: '💨',
+    label: 'Oxygen Blowing',
+    description: 'Predict O₂ blow volume or lance height for oxidation control.',
+    keywords: ['oxygen', 'o2', 'blow', 'lance', 'nm3', 'oxidation', 'o2_blow', 'blowing'],
   },
 ] as const;
 
