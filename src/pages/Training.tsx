@@ -7,7 +7,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Progress } from '@/components/ui/progress';
 import { toast } from 'sonner';
-import type { TrainedModel, TrainingConfig } from '@/lib/ml-engine';
+import { trainModels, type TrainedModel, type TrainingConfig } from '@/lib/ml-engine';
 import { motion } from 'framer-motion';
 import { Loader2, Trophy, ArrowRight, TrendingUp, AlertCircle, ChevronDown, ChevronUp } from 'lucide-react';
 import {
@@ -205,58 +205,24 @@ export default function Training() {
     };
 
     try {
-      // ── Send data to the server-side training endpoint ──────────────────
-      // The server streams progress events (SSE format) and finishes with
-      // a single "result" event containing all three serialised models.
-      const response = await fetch('/api/train', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ data: currentDataset.data, config }),
-      });
-
-      if (!response.ok || !response.body) {
-        const text = await response.text().catch(() => '');
-        throw new Error(text || `Server returned ${response.status}`);
-      }
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = '';
-
-      outer: while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-
-        // SSE events are delimited by double newlines
-        const parts = buffer.split('\n\n');
-        buffer = parts.pop() ?? ''; // keep any incomplete trailing event
-
-        for (const part of parts) {
-          for (const line of part.split('\n')) {
-            if (!line.startsWith('data: ')) continue;
-            let payload: any;
-            try { payload = JSON.parse(line.slice(6)); } catch { continue; }
-
-            if (payload.type === 'progress') {
-              setProgressLabel(payload.label as string);
-              setProgress(payload.pct as number);
-            } else if (payload.type === 'result') {
-              const trainedModels: TrainedModel[] = payload.models;
-              trainedModels.forEach(m => addTrainedModel(m));
-              setResults(trainedModels);
-              setProgress(100);
-              setProgressLabel('Done!');
-              setIsTraining(false);
-              toast.success(`Training complete! ${trainedModels.length} models ready.`);
-              break outer;
-            } else if (payload.type === 'error') {
-              throw new Error(payload.message as string);
-            }
-          }
+      // ── Run training directly in the browser ─────────────────────────────
+      // ml-engine.ts is pure JS (no Node.js APIs) so it runs fine in-browser.
+      // This avoids the 413 / 50 MB payload limit of the /api/train endpoint.
+      const trainedModels = await trainModels(
+        currentDataset.data,
+        config,
+        (label: string, pct: number) => {
+          setProgressLabel(label);
+          setProgress(pct);
         }
-      }
+      );
+
+      trainedModels.forEach(m => addTrainedModel(m));
+      setResults(trainedModels);
+      setProgress(100);
+      setProgressLabel('Done!');
+      setIsTraining(false);
+      toast.success(`Training complete! ${trainedModels.length} models ready.`);
     } catch (err: any) {
       console.error(err);
       setError(err?.message ?? 'Training failed. Check that selected features and target are numeric columns with sufficient data.');
