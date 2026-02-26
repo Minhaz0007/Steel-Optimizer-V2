@@ -10,6 +10,7 @@ import Papa from 'papaparse';
 import * as XLSX from 'xlsx';
 import { useStore, Dataset, ColumnMapping } from '@/store/useStore';
 import { useNavigate } from 'react-router-dom';
+import { saveDatasetRows } from '@/lib/db';
 import { v4 as uuidv4 } from 'uuid';
 import { cn } from '@/lib/utils';
 import {
@@ -411,6 +412,11 @@ export default function UploadPage() {
     };
 
     addDataset(newDataset);
+    // Persist raw rows to IndexedDB so they survive page refreshes
+    // (Zustand/localStorage only stores metadata due to size limits).
+    saveDatasetRows(newDataset.id, parsedData).catch(() => {
+      // IndexedDB failure is non-fatal — data is still in memory for this session
+    });
     toast.success('Dataset saved to workspace');
     navigate('/explorer');
   };

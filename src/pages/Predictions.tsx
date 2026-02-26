@@ -13,6 +13,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell
 } from 'recharts';
 import { useNavigate } from 'react-router-dom';
+import { v4 as uuidv4 } from 'uuid';
 
 // Score color: green for high, orange for mid, red for low
 function accuracyColor(acc: number) {
@@ -23,6 +24,7 @@ function accuracyColor(acc: number) {
 
 export default function Predictions() {
   const trainedModels = useStore((state) => state.trainedModels);
+  const addPrediction = useStore((state) => state.addPrediction);
   const [selectedModelId, setSelectedModelId] = useState<string>('');
   const [inputs, setInputs] = useState<Record<string, string>>({});
   const [prediction, setPrediction] = useState<number | null>(null);
@@ -59,6 +61,14 @@ export default function Predictions() {
     }
 
     setPrediction(result);
+    addPrediction({
+      id: uuidv4(),
+      modelId: selectedModel.id,
+      modelType: selectedModel.type,
+      targetVariable: selectedModel.config.targetVariable,
+      result,
+      timestamp: new Date().toISOString(),
+    });
     toast.success('Prediction generated');
   };
 
