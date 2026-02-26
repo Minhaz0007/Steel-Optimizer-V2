@@ -1,98 +1,175 @@
 import express from "express";
 import { fileURLToPath } from "url";
 import path from "path";
-import { trainModels } from "./src/lib/ml-engine.ts";
+import { spawn } from "child_process";
+import { createInterface } from "readline";
+import { writeFileSync, unlinkSync, existsSync } from "fs";
+import { tmpdir } from "os";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// ---------------------------------------------------------------------------
+// Helper: write an array of row objects to a temporary CSV file.
+// ---------------------------------------------------------------------------
+function writeDataToCsv(data: any[]): string {
+  if (!data || data.length === 0) throw new Error("Empty data array.");
+  const columns = Object.keys(data[0]);
+  const escape = (v: any): string => {
+    const s = v == null ? "" : String(v);
+    return s.includes(",") || s.includes("\n") || s.includes('"')
+      ? `"${s.replace(/"/g, '""')}"`
+      : s;
+  };
+  const lines = [
+    columns.join(","),
+    ...data.map((row) => columns.map((col) => escape(row[col])).join(",")),
+  ];
+  const tmpPath = path.join(
+    tmpdir(),
+    `steel_${Date.now()}_${Math.random().toString(36).slice(2)}.csv`
+  );
+  writeFileSync(tmpPath, lines.join("\n"), "utf8");
+  return tmpPath;
+}
+
+function cleanupTmp(p: string | null): void {
+  if (p && existsSync(p)) { try { unlinkSync(p); } catch { /* ignore */ } }
+}
+
 async function startServer() {
   const app = express();
-  // Cloud Run injects PORT=8080; fall back to 3000 for local dev
   const PORT = Number(process.env.PORT) || 3000;
+  const ARTIFACT_DIR = process.env.ARTIFACT_DIR || "ml/artifacts";
 
-  // ── /api/train — Server-Sent Events training endpoint ──────────────────
-  // Accepts: POST { data: any[], config: TrainingConfig }
-  // Streams:  data: {"type":"progress","label":"...","pct":0-100}
-  //           data: {"type":"result","models":[...]}
-  //           data: {"type":"error","message":"..."}
-  app.post(
-    "/api/train",
-    express.json({ limit: "50mb" }),
-    async (req, res) => {
-      const { data, config } = req.body ?? {};
+  // ── /api/train ─────────────────────────────────────────────────────────────
+  // POST { data: any[] }
+  // Streams SSE events from Python stdout:
+  //   { type:"progress", label:string, pct:number }
+  //   { type:"result", regressors:[...], classifiers:[...], ... }
+  //   { type:"error", message:string }
+  app.post("/api/train", express.json({ limit: "100mb" }), async (req, res) => {
+    const { data } = req.body ?? {};
+    if (!Array.isArray(data) || data.length === 0) {
+      res.status(400).json({ error: "Missing or empty data array." });
+      return;
+    }
 
-      if (!Array.isArray(data) || !config) {
-        res.status(400).json({ error: "Missing data or config in request body." });
-        return;
-      }
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+    res.flushHeaders();
 
-      // Set up SSE — keep the connection open and stream events
-      res.setHeader("Content-Type", "text/event-stream");
-      res.setHeader("Cache-Control", "no-cache");
-      res.setHeader("Connection", "keep-alive");
-      res.setHeader("X-Accel-Buffering", "no"); // disable nginx/proxy buffering
-      res.flushHeaders();
+    let csvPath: string | null = null;
+    let clientGone = false;
+    req.on("close", () => { clientGone = true; });
 
-      let clientGone = false;
-      req.on("close", () => {
-        clientGone = true;
+    const send = (payload: object) => {
+      if (clientGone) return;
+      try { res.write(`data: ${JSON.stringify(payload)}\n\n`); } catch { clientGone = true; }
+    };
+
+    try {
+      send({ type: "progress", label: "Writing dataset to temp file…", pct: 2 });
+      csvPath = writeDataToCsv(data);
+
+      const py = spawn(
+        "python3",
+        ["-m", "ml.train_server", csvPath, ARTIFACT_DIR],
+        { cwd: __dirname, env: { ...process.env, PYTHONUNBUFFERED: "1" } }
+      );
+
+      const rl = createInterface({ input: py.stdout });
+      rl.on("line", (line) => {
+        const t = line.trim();
+        if (!t) return;
+        try { send(JSON.parse(t)); }
+        catch { process.stderr.write(`[python] ${t}\n`); }
       });
 
-      const send = (payload: object) => {
-        if (clientGone) return;
-        try {
-          res.write(`data: ${JSON.stringify(payload)}\n\n`);
-        } catch {
-          clientGone = true;
-        }
-      };
+      py.stderr.on("data", (chunk: Buffer) => process.stderr.write(chunk));
 
-      try {
-        const models = await trainModels(
-          data,
-          config,
-          (label: string, pct: number) => {
-            send({ type: "progress", label, pct });
-          }
-        );
+      py.on("close", (code) => {
+        cleanupTmp(csvPath);
+        if (!clientGone && code !== 0)
+          send({ type: "error", message: `Python exited with code ${code}.` });
+        res.end();
+      });
 
-        // modelInstance holds a live JS object that cannot be JSON-serialised.
-        // Predictions reconstruct it on demand from modelJSON, so strip it here.
-        const serialised = models.map((m) => ({ ...m, modelInstance: null }));
-        send({ type: "result", models: serialised });
-      } catch (err: any) {
-        send({ type: "error", message: err?.message ?? "Training failed." });
-      }
-
+      py.on("error", (err) => {
+        cleanupTmp(csvPath);
+        send({ type: "error", message: `Cannot start Python: ${err.message}` });
+        res.end();
+      });
+    } catch (err: any) {
+      cleanupTmp(csvPath);
+      send({ type: "error", message: err?.message ?? "Server error." });
       res.end();
     }
-  );
-
-  // ── Health check ────────────────────────────────────────────────────────
-  app.get("/api/health", (_req, res) => {
-    res.json({ status: "ok" });
   });
 
-  // ── Frontend ────────────────────────────────────────────────────────────
+  // ── /api/recommend ─────────────────────────────────────────────────────────
+  // POST { context: Record<string, number> }
+  // Returns JSON RecommendationResult
+  app.post("/api/recommend", express.json({ limit: "1mb" }), async (req, res) => {
+    const { context } = req.body ?? {};
+    if (!context || typeof context !== "object") {
+      res.status(400).json({ error: "Missing context object." });
+      return;
+    }
+    try {
+      const py = spawn(
+        "python3",
+        ["-m", "ml.predict_cli", JSON.stringify(context), ARTIFACT_DIR],
+        { cwd: __dirname, env: { ...process.env, PYTHONUNBUFFERED: "1" } }
+      );
+      let stdout = "";
+      py.stdout.on("data", (d: Buffer) => { stdout += d.toString(); });
+      py.stderr.on("data", (d: Buffer) => process.stderr.write(d));
+      py.on("close", () => {
+        try {
+          const result = JSON.parse(stdout.trim());
+          result?.error ? res.status(500).json({ error: result.error }) : res.json(result);
+        } catch {
+          res.status(500).json({ error: "Failed to parse Python output.", raw: stdout.slice(0, 500) });
+        }
+      });
+      py.on("error", (err) => res.status(500).json({ error: `Cannot start Python: ${err.message}` }));
+    } catch (err: any) {
+      res.status(500).json({ error: err?.message ?? "Server error." });
+    }
+  });
+
+  // ── /api/models/status ─────────────────────────────────────────────────────
+  app.get("/api/models/status", (_req, res) => {
+    const af = (name: string) => path.join(__dirname, ARTIFACT_DIR, name);
+    const regressors = ["yield_pct", "steel_output_tons", "energy_cost_usd", "production_cost_usd", "scrap_rate_pct"]
+      .map((t) => ({ target: t, trained: existsSync(af(`${t}_lgbm.pkl`)) }));
+    const classifiers = ["quality_grade_pass", "rework_required"]
+      .map((t) => ({ target: t, trained: existsSync(af(`${t}_catboost.pkl`)) }));
+    const anomaly = existsSync(af("anomaly_iforest.pkl"));
+    const forecaster = existsSync(af("forecast_feature_cols.pkl"));
+    res.json({
+      regressors, classifiers, anomaly, forecaster,
+      allTrained: regressors.every((r) => r.trained) && classifiers.every((c) => c.trained) && anomaly && forecaster,
+    });
+  });
+
+  // ── /api/health ────────────────────────────────────────────────────────────
+  app.get("/api/health", (_req, res) => res.json({ status: "ok" }));
+
+  // ── Frontend ───────────────────────────────────────────────────────────────
   if (process.env.NODE_ENV === "production") {
-    // Serve Vite-built static assets
     app.use(express.static(path.join(__dirname, "dist")));
-    // SPA fallback — return index.html for all non-API routes
-    app.get("*", (_req, res) => {
-      res.sendFile(path.join(__dirname, "dist", "index.html"));
-    });
+    app.get("*", (_req, res) => res.sendFile(path.join(__dirname, "dist", "index.html")));
   } else {
-    // Dynamic import keeps vite out of the production bundle/container
     const { createServer: createViteServer } = await import("vite");
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
+    const vite = await createViteServer({ server: { middlewareMode: true }, appType: "spa" });
     app.use(vite.middlewares);
   }
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+    console.log(`Server → http://localhost:${PORT}  |  artifacts: ${path.resolve(ARTIFACT_DIR)}`);
   });
 }
 
