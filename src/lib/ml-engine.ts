@@ -1,5 +1,4 @@
 import MultivariateLinearRegression from 'ml-regression-multivariate-linear';
-import { RandomForestRegression } from 'ml-random-forest';
 
 export interface TrainingConfig {
   targetVariable: string;
@@ -235,6 +234,190 @@ class GradientBoostingRegressor {
 }
 
 // ============================================================
+// Extra Trees Regressor (Extremely Randomized Trees)
+// Replaces ml-random-forest which has a fully synchronous train()
+// that blocks the worker thread indefinitely on large datasets.
+//
+// Key difference from standard RF: splits are chosen randomly
+// (O(n·features) per node) instead of optimally (O(n·log n·features)),
+// making each tree ~10× faster to build with similar accuracy.
+//
+// train() is async and yields every 5 trees so the worker thread
+// stays responsive and progress messages keep flowing.
+// ============================================================
+
+interface ETreeNode {
+  value: number;
+  feature?: number;
+  threshold?: number;
+  left?: ETreeNode;
+  right?: ETreeNode;
+}
+
+class ExtraTree {
+  root: ETreeNode = { value: 0 };
+  private rng: () => number;
+
+  constructor(seed: number, private maxDepth = 6, private minLeaf = 5) {
+    let s = seed >>> 0;
+    this.rng = () => {
+      s = (Math.imul(s, 1664525) + 1013904223) >>> 0;
+      return s / 0x100000000;
+    };
+  }
+
+  train(X: number[][], y: number[], featureSubset: number[]): void {
+    this.root = this.buildNode(X, y, featureSubset, 0);
+  }
+
+  private buildNode(X: number[][], y: number[], features: number[], depth: number): ETreeNode {
+    const n = y.length;
+    let sum = 0;
+    for (let i = 0; i < n; i++) sum += y[i];
+    const mean = sum / n;
+    const node: ETreeNode = { value: mean };
+
+    if (depth >= this.maxDepth || n < this.minLeaf * 2) return node;
+
+    let bestScore = Infinity, bestFeature = -1, bestThreshold = 0;
+
+    for (const f of features) {
+      let min = Infinity, max = -Infinity;
+      for (let i = 0; i < n; i++) {
+        if (X[i][f] < min) min = X[i][f];
+        if (X[i][f] > max) max = X[i][f];
+      }
+      if (min === max) continue;
+
+      // Random threshold between min and max (Extra Trees — no exhaustive search)
+      const threshold = min + this.rng() * (max - min);
+
+      let lSum = 0, lSumSq = 0, lCount = 0;
+      let rSum = 0, rSumSq = 0;
+      for (let i = 0; i < n; i++) {
+        const v = y[i];
+        if (X[i][f] <= threshold) { lSum += v; lSumSq += v * v; lCount++; }
+        else                       { rSum += v; rSumSq += v * v; }
+      }
+      const rCount = n - lCount;
+      if (lCount < this.minLeaf || rCount < this.minLeaf) continue;
+
+      const score = (lSumSq - lSum * lSum / lCount) + (rSumSq - rSum * rSum / rCount);
+      if (score < bestScore) { bestScore = score; bestFeature = f; bestThreshold = threshold; }
+    }
+
+    if (bestFeature === -1) return node;
+
+    const leftX: number[][] = [], leftY: number[] = [];
+    const rightX: number[][] = [], rightY: number[] = [];
+    for (let i = 0; i < n; i++) {
+      if (X[i][bestFeature] <= bestThreshold) { leftX.push(X[i]); leftY.push(y[i]); }
+      else                                    { rightX.push(X[i]); rightY.push(y[i]); }
+    }
+
+    node.feature = bestFeature; node.threshold = bestThreshold;
+    node.left  = this.buildNode(leftX, leftY, features, depth + 1);
+    node.right = this.buildNode(rightX, rightY, features, depth + 1);
+    return node;
+  }
+
+  predictSingle(x: number[]): number {
+    let node = this.root;
+    while (node.left !== undefined) {
+      node = x[node.feature!] <= node.threshold! ? node.left : node.right!;
+    }
+    return node.value;
+  }
+
+  predict(X: number[][]): number[] { return X.map(x => this.predictSingle(x)); }
+
+  toJSON(): any { return this.nodeToJSON(this.root); }
+  private nodeToJSON(n: ETreeNode): any {
+    if (n.left === undefined) return { v: n.value };
+    return { v: n.value, f: n.feature, t: n.threshold, l: this.nodeToJSON(n.left), r: this.nodeToJSON(n.right!) };
+  }
+
+  static load(json: any): ExtraTree {
+    const t = new ExtraTree(0);
+    t.root = ExtraTree.nodeFromJSON(json);
+    return t;
+  }
+  private static nodeFromJSON(j: any): ETreeNode {
+    if (j.f === undefined) return { value: j.v };
+    return { value: j.v, feature: j.f, threshold: j.t,
+      left: ExtraTree.nodeFromJSON(j.l), right: ExtraTree.nodeFromJSON(j.r) };
+  }
+}
+
+class ExtraTreesRegressor {
+  trees: ExtraTree[] = [];
+  readonly nEstimators: number;
+  readonly maxDepth: number;
+
+  constructor(options: { nEstimators?: number; maxDepth?: number } = {}) {
+    this.nEstimators = options.nEstimators ?? 50;
+    this.maxDepth    = options.maxDepth    ?? 6;
+  }
+
+  async train(X: number[][], y: number[], onProgress?: (pct: number) => void): Promise<void> {
+    const n = X.length;
+    const nFeatures = X[0].length;
+    const kFeatures = Math.max(1, Math.round(Math.sqrt(nFeatures)));
+
+    for (let i = 0; i < this.nEstimators; i++) {
+      // Yield every 5 trees — keeps the worker thread responsive
+      if (i % 5 === 0) {
+        await new Promise<void>(r => setTimeout(r, 0));
+        onProgress?.(i / this.nEstimators * 100);
+      }
+
+      // Seeded LCG for reproducibility
+      let s = (42 + i * 31337) >>> 0;
+      const lcg = () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 0x100000000; };
+
+      // Bootstrap sample
+      const bootX: number[][] = [];
+      const bootY: number[]   = [];
+      for (let j = 0; j < n; j++) {
+        const idx = Math.floor(lcg() * n);
+        bootX.push(X[idx]); bootY.push(y[idx]);
+      }
+
+      // Random feature subset (√features)
+      const allF = Array.from({ length: nFeatures }, (_, k) => k);
+      for (let j = allF.length - 1; j > 0; j--) {
+        const k = Math.floor(lcg() * (j + 1));
+        [allF[j], allF[k]] = [allF[k], allF[j]];
+      }
+      const featureSubset = allF.slice(0, kFeatures);
+
+      const tree = new ExtraTree(s + 1, this.maxDepth);
+      tree.train(bootX, bootY, featureSubset);
+      this.trees.push(tree);
+    }
+  }
+
+  predict(X: number[][]): number[] {
+    return X.map(x => {
+      let sum = 0;
+      for (const t of this.trees) sum += t.predictSingle(x);
+      return sum / this.trees.length;
+    });
+  }
+
+  toJSON(): any {
+    return { name: 'extraTrees', nEstimators: this.nEstimators, maxDepth: this.maxDepth,
+             trees: this.trees.map(t => t.toJSON()) };
+  }
+
+  static load(json: any): ExtraTreesRegressor {
+    const et = new ExtraTreesRegressor({ nEstimators: json.nEstimators, maxDepth: json.maxDepth });
+    et.trees = json.trees.map((t: any) => ExtraTree.load(t));
+    return et;
+  }
+}
+
+// ============================================================
 // Metrics Calculation
 // All outputs are sanitized: NaN / ±Infinity become 0.
 // ============================================================
@@ -371,15 +554,9 @@ async function runKFoldCV(
       preds = (mlr.predict(X_val_s) as number[][]).map((p: number[]) => p[0]);
 
     } else if (modelType === 'rf') {
-      const nFeatures = X_tr[0]?.length ?? 1;
-      const rf = new RandomForestRegression({
-        seed: 42 + fold,
-        maxFeatures: Math.min(0.8, Math.max(0.3, Math.sqrt(nFeatures) / nFeatures)),
-        replacement: true,
-        nEstimators: 10, // reduced for CV speed; final model uses 25
-      });
-      rf.train(X_tr, y_tr);
-      preds = rf.predict(X_val) as number[];
+      const et = new ExtraTreesRegressor({ nEstimators: 10, maxDepth: 5 });
+      await et.train(X_tr, y_tr);
+      preds = et.predict(X_val);
 
     } else {
       const gbm = new GradientBoostingRegressor({ nEstimators: 30, learningRate: 0.05 });
@@ -508,28 +685,25 @@ export async function trainModels(
     });
   }
 
-  // ── Random Forest ───────────────────────────────────────────
+  // ── Random Forest (Extra Trees) ─────────────────────────────
+  // Uses ExtraTreesRegressor: fully async, yields every 5 trees,
+  // O(n·features) per node instead of O(n·log n·features) for CART.
   if (models.includes('rf')) {
-    await tick('Training Random Forest (25 trees)…', 35);
+    await tick('Training Random Forest (50 trees)…', 35);
 
-    const rf = new RandomForestRegression({
-      seed: 42,
-      maxFeatures: Math.min(0.8, Math.max(0.3, Math.sqrt(features.length) / features.length)),
-      replacement: true,
-      nEstimators: 25,
+    const et = new ExtraTreesRegressor({ nEstimators: 50, maxDepth: 6 });
+    await et.train(X_train, y_train, (pct) => {
+      onProgress?.(`Training Random Forest (${Math.round(pct / 2 + 35)}%)…`, 35 + Math.round(pct * 0.12));
     });
-    rf.train(X_train, y_train);
-    const predictions = rf.predict(X_test) as number[];
+    const predictions = et.predict(X_test);
     const metrics = calculateMetrics(y_test, predictions);
 
-    // Announce importance BEFORE the async computation begins
     await tick('Computing feature importance (Random Forest)…', 48);
     const importance = await computePermutationImportance(
-      (Xs) => rf.predict(Xs) as number[],
+      (Xs) => et.predict(Xs),
       X_test, y_test, features, metrics.rmse
     );
 
-    // Announce CV BEFORE the async computation begins
     await tick('Cross-validating Random Forest (5 folds)…', 55);
     const cv = await runKFoldCV(X_all, y_all, 'rf');
 
@@ -538,8 +712,8 @@ export async function trainModels(
       type: 'Random Forest',
       metrics,
       cvMetrics: { mean: cv.mean, std: cv.std, folds: 5 },
-      modelInstance: rf,
-      modelJSON: rf.toJSON(),
+      modelInstance: et,
+      modelJSON: et.toJSON(),
       featureImportance: importance,
       config,
     });
@@ -588,7 +762,7 @@ export function reconstructModel(modelData: TrainedModel): any {
   if (!modelData.modelJSON) return null;
   try {
     if (modelData.type === 'Random Forest') {
-      return RandomForestRegression.load(modelData.modelJSON);
+      return ExtraTreesRegressor.load(modelData.modelJSON);
     }
     if (modelData.type === 'Gradient Boosting') {
       return GradientBoostingRegressor.load(modelData.modelJSON);
@@ -616,8 +790,7 @@ export function predictWithModel(modelData: TrainedModel, inputVector: number[])
       return result[0][0];
     }
     if (modelData.type === 'Random Forest') {
-      const result = model.predict([inputVector]) as number[];
-      return result[0];
+      return (model as ExtraTreesRegressor).predict([inputVector])[0];
     }
     if (modelData.type === 'Gradient Boosting') {
       const result = (model as GradientBoostingRegressor).predict([inputVector]);
