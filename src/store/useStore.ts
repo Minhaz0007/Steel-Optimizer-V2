@@ -37,16 +37,20 @@ interface AppState {
   trainedModels: TrainedModel[];
   predictions: PredictionRecord[];
   isLoading: boolean;
+  userName: string;
 
   setDataset: (dataset: Dataset) => void;
   addDataset: (dataset: Dataset) => void;
   updateDatasetMapping: (datasetId: string, mappings: ColumnMapping[]) => void;
   removeDataset: (id: string) => void;
   addTrainedModel: (model: TrainedModel) => void;
+  removeTrainedModel: (id: string) => void;
   addPrediction: (record: PredictionRecord) => void;
+  clearPredictions: () => void;
   /** Restore raw rows for a dataset after loading them from IndexedDB. */
   hydrateDatasetData: (id: string, data: any[]) => void;
   setLoading: (loading: boolean) => void;
+  setUserName: (name: string) => void;
 }
 
 export const useStore = create<AppState>()(
@@ -57,8 +61,10 @@ export const useStore = create<AppState>()(
       trainedModels: [],
       predictions: [],
       isLoading: false,
+      userName: 'Operator',
 
       setLoading: (loading) => set({ isLoading: loading }),
+      setUserName: (name) => set({ userName: name }),
 
       setDataset: (dataset) => set({ currentDataset: dataset }),
 
@@ -92,11 +98,18 @@ export const useStore = create<AppState>()(
           trainedModels: [...state.trainedModels, model],
         })),
 
+      removeTrainedModel: (id) =>
+        set((state) => ({
+          trainedModels: state.trainedModels.filter((m) => m.id !== id),
+        })),
+
       addPrediction: (record) =>
         set((state) => ({
           // Keep at most 200 recent predictions
           predictions: [record, ...state.predictions].slice(0, 200),
         })),
+
+      clearPredictions: () => set({ predictions: [] }),
 
       hydrateDatasetData: (id, data) =>
         set((state) => ({
@@ -124,6 +137,7 @@ export const useStore = create<AppState>()(
           ...m,
           modelInstance: null,
         })),
+        userName: state.userName,
       }),
     }
   )

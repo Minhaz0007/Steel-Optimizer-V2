@@ -8,12 +8,10 @@ import Explorer from './pages/Explorer';
 import Training from './pages/Training';
 import Predictions from './pages/Predictions';
 import Onboarding from './pages/Onboarding';
+import Reports from './pages/Reports';
+import Settings from './pages/Settings';
 import { useStore } from './store/useStore';
 import { loadDatasetRows } from './lib/db';
-
-// Placeholder pages
-const Reports = () => <div className="p-4">Reports (Coming Soon)</div>;
-const Settings = () => <div className="p-4">Settings (Coming Soon)</div>;
 
 /**
  * On mount, restore raw dataset rows from IndexedDB into Zustand.
