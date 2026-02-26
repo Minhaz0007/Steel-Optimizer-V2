@@ -376,14 +376,14 @@ async function runKFoldCV(
         seed: 42 + fold,
         maxFeatures: Math.min(0.8, Math.max(0.3, Math.sqrt(nFeatures) / nFeatures)),
         replacement: true,
-        nEstimators: 30, // reduced from 100 for CV speed; final model uses 100
+        nEstimators: 10, // reduced for CV speed; final model uses 25
       });
       rf.train(X_tr, y_tr);
       preds = rf.predict(X_val) as number[];
 
     } else {
       const gbm = new GradientBoostingRegressor({ nEstimators: 30, learningRate: 0.05 });
-      // reduced from 80 for CV speed; final model uses 80
+      // reduced for CV speed; final model uses 80
       await gbm.train(X_tr, y_tr);
       preds = gbm.predict(X_val);
     }
@@ -510,13 +510,13 @@ export async function trainModels(
 
   // ── Random Forest ───────────────────────────────────────────
   if (models.includes('rf')) {
-    await tick('Training Random Forest (100 trees)…', 35);
+    await tick('Training Random Forest (25 trees)…', 35);
 
     const rf = new RandomForestRegression({
       seed: 42,
       maxFeatures: Math.min(0.8, Math.max(0.3, Math.sqrt(features.length) / features.length)),
       replacement: true,
-      nEstimators: 100,
+      nEstimators: 25,
     });
     rf.train(X_train, y_train);
     const predictions = rf.predict(X_test) as number[];
