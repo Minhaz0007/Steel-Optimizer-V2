@@ -20,7 +20,6 @@ import {
   Tooltip,
   ResponsiveContainer,
   Cell,
-  Legend,
 } from 'recharts';
 import {
   Database,
@@ -31,42 +30,23 @@ import {
   ArrowRight,
   FileSpreadsheet,
   Sparkles,
-  Activity,
   Award,
   TrendingUp,
   Clock,
   ShieldCheck,
-  AlertTriangle,
   BarChart3,
   Layers,
+  AlertTriangle,
+  Activity,
+  Settings,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
-function modelTypeLabel(type: string) {
-  if (type === 'linear') return 'Linear Regression';
-  if (type === 'rf') return 'Random Forest';
-  return 'Gradient Boosting';
-}
-
-function modelTypeBadgeClass(type: string) {
-  if (type === 'linear')
-    return 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300';
-  if (type === 'rf')
-    return 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300';
-  return 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300';
-}
-
 function r2ColorClass(r2: number) {
   if (r2 >= 0.9) return 'text-green-600 dark:text-green-400';
   if (r2 >= 0.7) return 'text-amber-600 dark:text-amber-400';
-  return 'text-red-500';
-}
-
-function healthColorClass(score: number) {
-  if (score >= 80) return 'text-green-600 dark:text-green-400';
-  if (score >= 60) return 'text-amber-600 dark:text-amber-400';
   return 'text-red-500';
 }
 
@@ -114,25 +94,20 @@ const CHART_COLORS = [
 
 export default function Dashboard() {
   const datasets = useStore((s) => s.datasets);
-  const trainedModels = useStore((s) => s.trainedModels);
-  const predictions = useStore((s) => s.predictions);
+  const trainingSession = useStore((s) => s.trainingSession);
+  const optimizationRecords = useStore((s) => s.optimizationRecords);
   const navigate = useNavigate();
 
   // ── derived values ──────────────────────────────────────────────────────────
 
-  const bestModel = useMemo(
-    () =>
-      trainedModels.length
-        ? [...trainedModels].sort((a, b) => b.metrics.r2 - a.metrics.r2)[0]
-        : null,
-    [trainedModels]
-  );
+  const bestRegressor = useMemo(() => {
+    if (!trainingSession?.regressors?.length) return null;
+    return [...trainingSession.regressors].sort((a, b) => b.test_r2 - a.test_r2)[0];
+  }, [trainingSession]);
 
   const avgHealthScore = useMemo(() => {
     if (!datasets.length) return null;
-    return Math.round(
-      datasets.reduce((s, d) => s + d.healthScore, 0) / datasets.length
-    );
+    return Math.round(datasets.reduce((s, d) => s + d.healthScore, 0) / datasets.length);
   }, [datasets]);
 
   const totalRows = useMemo(
@@ -140,25 +115,35 @@ export default function Dashboard() {
     [datasets]
   );
 
-  // Leaderboard: all models sorted by R²
-  const leaderboard = useMemo(
-    () => [...trainedModels].sort((a, b) => b.metrics.r2 - a.metrics.r2),
-    [trainedModels]
+  // Regressor leaderboard
+  const regressorLeaderboard = useMemo(
+    () =>
+      trainingSession?.regressors
+        ? [...trainingSession.regressors].sort((a, b) => b.test_r2 - a.test_r2)
+        : [],
+    [trainingSession]
   );
 
-  // Bar chart: top 8 models
+  // Classifier leaderboard
+  const classifierLeaderboard = useMemo(
+    () =>
+      trainingSession?.classifiers
+        ? [...trainingSession.classifiers].sort((a, b) => b.test_auc - a.test_auc)
+        : [],
+    [trainingSession]
+  );
+
+  // Bar chart for regressors
   const chartData = useMemo(
     () =>
-      leaderboard.slice(0, 8).map((m, i) => ({
+      regressorLeaderboard.map((r) => ({
         name:
-          modelTypeLabel(m.type).replace(' Regression', ' Reg.') +
-          (i + 1 > 1 ? ` #${i + 1}` : ''),
-        r2Pct: parseFloat((m.metrics.r2 * 100).toFixed(1)),
-        accuracy: parseFloat(m.metrics.accuracy.toFixed(1)),
-        target: m.config.targetVariable,
-        type: m.type,
+          r.target.length > 18 ? r.target.substring(0, 16) + '…' : r.target,
+        fullName: r.target,
+        r2Pct: parseFloat((r.test_r2 * 100).toFixed(1)),
+        cvR2Pct: parseFloat((r.cv_r2_mean * 100).toFixed(1)),
       })),
-    [leaderboard]
+    [regressorLeaderboard]
   );
 
   // Workflow steps
@@ -179,27 +164,27 @@ export default function Dashboard() {
         Icon: Database,
       },
       {
-        label: 'Train Models',
-        desc: 'Run Linear, RF & Gradient Boosting',
-        done: trainedModels.length > 0,
+        label: 'Train Pipeline',
+        desc: 'Run LightGBM, CatBoost & Optuna',
+        done: trainingSession !== null,
         path: '/training',
         Icon: Cpu,
       },
       {
-        label: 'Run Predictions',
-        desc: 'Predict & optimise parameters',
-        done: predictions.length > 0,
+        label: 'Optimize',
+        desc: 'Run Bayesian setpoint optimization',
+        done: optimizationRecords.length > 0,
         path: '/predictions',
         Icon: Target,
       },
     ],
-    [datasets, trainedModels, predictions]
+    [datasets, trainingSession, optimizationRecords]
   );
 
   const completedSteps = steps.filter((s) => s.done).length;
   const nextStep = steps.find((s) => !s.done);
 
-  // ── KPI card helper ─────────────────────────────────────────────────────────
+  // ── KPI cards ────────────────────────────────────────────────────────────────
 
   const kpiCards = [
     {
@@ -214,34 +199,34 @@ export default function Dashboard() {
       onClick: () => navigate('/upload'),
     },
     {
-      label: 'Models Trained',
-      value: trainedModels.length,
-      sub: bestModel
-        ? `Best R² ${(bestModel.metrics.r2 * 100).toFixed(1)}%`
-        : 'None yet',
+      label: 'ML Pipeline',
+      value: trainingSession ? 'Trained' : 'Not trained',
+      sub: trainingSession
+        ? `${trainingSession.rows.toLocaleString()} rows · ${trainingSession.features} features`
+        : 'Run training first',
       Icon: Cpu,
       iconBg: 'bg-purple-100 dark:bg-purple-900/30',
       iconColor: 'text-purple-600 dark:text-purple-400',
       onClick: () => navigate('/training'),
     },
     {
-      label: 'Best Accuracy',
-      value: bestModel ? `${bestModel.metrics.accuracy.toFixed(1)}%` : '—',
-      sub: bestModel
-        ? `${modelTypeLabel(bestModel.type)} → ${bestModel.config.targetVariable}`
-        : 'Train a model first',
+      label: 'Best R²',
+      value: bestRegressor ? `${(bestRegressor.test_r2 * 100).toFixed(1)}%` : '—',
+      sub: bestRegressor
+        ? `LightGBM → ${bestRegressor.target}`
+        : 'Train models first',
       Icon: Award,
       iconBg: 'bg-amber-100 dark:bg-amber-900/30',
       iconColor: 'text-amber-600 dark:text-amber-400',
       onClick: () => navigate('/predictions'),
     },
     {
-      label: 'Predictions Made',
-      value: predictions.length,
+      label: 'Optimizations',
+      value: optimizationRecords.length,
       sub:
-        predictions.length > 0
-          ? `Last: ${formatTime(predictions[0].timestamp)}`
-          : 'No predictions yet',
+        optimizationRecords.length > 0
+          ? `Last: ${formatTime(optimizationRecords[0].timestamp)}`
+          : 'No runs yet',
       Icon: Sparkles,
       iconBg: 'bg-green-100 dark:bg-green-900/30',
       iconColor: 'text-green-600 dark:text-green-400',
@@ -258,7 +243,7 @@ export default function Dashboard() {
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Dashboard</h1>
           <p className="text-muted-foreground mt-1">
-            Steel production optimisation workspace overview
+            Steel production ML optimization workspace
           </p>
         </div>
         <Button onClick={() => navigate('/upload')} className="hidden sm:flex">
@@ -286,9 +271,7 @@ export default function Dashboard() {
                     <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
                       {card.label}
                     </p>
-                    <p className="text-2xl font-bold mt-1 truncate">
-                      {card.value}
-                    </p>
+                    <p className="text-2xl font-bold mt-1 truncate">{card.value}</p>
                     <p className="text-xs text-muted-foreground mt-1 truncate">
                       {card.sub}
                     </p>
@@ -398,13 +381,13 @@ export default function Dashboard() {
         </Card>
       </motion.div>
 
-      {/* ── Main content: leaderboard + sidebar ── */}
-      {trainedModels.length > 0 || datasets.length > 0 ? (
+      {/* ── Main content ── */}
+      {trainingSession || datasets.length > 0 ? (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
           {/* Left column */}
           <div className="lg:col-span-8 space-y-6">
-            {/* Model leaderboard */}
-            {trainedModels.length > 0 && (
+            {/* LightGBM Regressor leaderboard */}
+            {regressorLeaderboard.length > 0 && (
               <motion.div
                 initial={{ opacity: 0, y: 16 }}
                 animate={{ opacity: 1, y: 0 }}
@@ -414,9 +397,9 @@ export default function Dashboard() {
                   <CardHeader>
                     <div className="flex items-center justify-between">
                       <div>
-                        <CardTitle>Model Leaderboard</CardTitle>
+                        <CardTitle>LightGBM Regressors</CardTitle>
                         <CardDescription>
-                          All trained models ranked by R² — higher is better (max 1.0)
+                          5 continuous targets — ranked by Test R²
                         </CardDescription>
                       </div>
                       <Button
@@ -425,7 +408,7 @@ export default function Dashboard() {
                         onClick={() => navigate('/training')}
                       >
                         <Cpu className="mr-2 h-4 w-4" />
-                        Train More
+                        Retrain
                       </Button>
                     </div>
                   </CardHeader>
@@ -435,20 +418,21 @@ export default function Dashboard() {
                         <thead>
                           <tr className="border-b text-muted-foreground">
                             <th className="text-left pb-2 font-medium w-8">#</th>
-                            <th className="text-left pb-2 font-medium">Model Type</th>
                             <th className="text-left pb-2 font-medium">Target</th>
-                            <th className="text-right pb-2 font-medium">R²</th>
-                            <th className="text-right pb-2 font-medium">Accuracy</th>
-                            <th className="text-right pb-2 font-medium">RMSE</th>
+                            <th className="text-right pb-2 font-medium">Test R²</th>
+                            <th className="text-right pb-2 font-medium">Test RMSE</th>
                             <th className="text-right pb-2 font-medium hidden md:table-cell">
                               CV R²
+                            </th>
+                            <th className="text-right pb-2 font-medium hidden md:table-cell">
+                              Best Iter
                             </th>
                           </tr>
                         </thead>
                         <tbody>
-                          {leaderboard.map((m, i) => (
+                          {regressorLeaderboard.map((m, i) => (
                             <tr
-                              key={m.id}
+                              key={m.target}
                               className={cn(
                                 'border-b last:border-0 hover:bg-muted/40 transition-colors',
                                 i === 0 && 'bg-amber-50/50 dark:bg-amber-900/10'
@@ -461,85 +445,138 @@ export default function Dashboard() {
                                   <span className="text-muted-foreground">{i + 1}</span>
                                 )}
                               </td>
-                              <td className="py-2.5">
-                                <span
-                                  className={cn(
-                                    'px-2 py-0.5 rounded text-xs font-medium',
-                                    modelTypeBadgeClass(m.type)
-                                  )}
-                                >
-                                  {modelTypeLabel(m.type)}
-                                </span>
-                              </td>
-                              <td className="py-2.5 max-w-[120px] truncate text-muted-foreground">
-                                {m.config.targetVariable}
+                              <td className="py-2.5 font-mono text-xs text-muted-foreground max-w-[140px] truncate">
+                                {m.target}
                               </td>
                               <td
                                 className={cn(
                                   'py-2.5 text-right font-semibold tabular-nums',
-                                  r2ColorClass(m.metrics.r2)
+                                  r2ColorClass(m.test_r2)
                                 )}
                               >
-                                {(m.metrics.r2 * 100).toFixed(1)}%
+                                {(m.test_r2 * 100).toFixed(1)}%
                               </td>
                               <td className="py-2.5 text-right tabular-nums text-muted-foreground">
-                                {m.metrics.accuracy.toFixed(1)}%
-                              </td>
-                              <td className="py-2.5 text-right tabular-nums text-muted-foreground">
-                                {m.metrics.rmse.toFixed(3)}
+                                {m.test_rmse.toFixed(3)}
                               </td>
                               <td className="py-2.5 text-right hidden md:table-cell tabular-nums text-muted-foreground">
-                                {m.cvMetrics
-                                  ? `${(m.cvMetrics.mean.r2 * 100).toFixed(1)}%`
-                                  : '—'}
+                                {(m.cv_r2_mean * 100).toFixed(1)}%
+                                <span className="text-xs opacity-60">
+                                  {' '}±{(m.cv_rmse_std).toFixed(2)}
+                                </span>
+                              </td>
+                              <td className="py-2.5 text-right hidden md:table-cell tabular-nums text-muted-foreground">
+                                {m.best_iteration}
                               </td>
                             </tr>
                           ))}
                         </tbody>
                       </table>
                     </div>
-
-                    {/* Legend for CV column */}
-                    {leaderboard.some((m) => m.cvMetrics) && (
-                      <p className="text-xs text-muted-foreground mt-3 flex items-center gap-1">
-                        <ShieldCheck className="h-3.5 w-3.5" />
-                        CV R² = 5-fold cross-validation score (generalisation estimate)
-                      </p>
-                    )}
+                    <p className="text-xs text-muted-foreground mt-3 flex items-center gap-1">
+                      <ShieldCheck className="h-3.5 w-3.5" />
+                      CV R² = 5-fold cross-validation mean (generalisation estimate)
+                    </p>
                   </CardContent>
                 </Card>
               </motion.div>
             )}
 
-            {/* Model comparison chart */}
+            {/* CatBoost Classifier leaderboard */}
+            {classifierLeaderboard.length > 0 && (
+              <motion.div
+                initial={{ opacity: 0, y: 16 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.42 }}
+              >
+                <Card>
+                  <CardHeader>
+                    <CardTitle>CatBoost Classifiers</CardTitle>
+                    <CardDescription>
+                      2 binary targets — ranked by AUC-ROC
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="border-b text-muted-foreground">
+                            <th className="text-left pb-2 font-medium">Target</th>
+                            <th className="text-right pb-2 font-medium">Test F1</th>
+                            <th className="text-right pb-2 font-medium">AUC-ROC</th>
+                            <th className="text-right pb-2 font-medium hidden md:table-cell">
+                              Precision
+                            </th>
+                            <th className="text-right pb-2 font-medium hidden md:table-cell">
+                              Recall
+                            </th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {classifierLeaderboard.map((c) => (
+                            <tr
+                              key={c.target}
+                              className="border-b last:border-0 hover:bg-muted/40 transition-colors"
+                            >
+                              <td className="py-2.5 font-mono text-xs text-muted-foreground max-w-[140px] truncate">
+                                {c.target}
+                              </td>
+                              <td className="py-2.5 text-right font-semibold tabular-nums">
+                                {c.test_f1.toFixed(3)}
+                              </td>
+                              <td
+                                className={cn(
+                                  'py-2.5 text-right font-semibold tabular-nums',
+                                  r2ColorClass(c.test_auc)
+                                )}
+                              >
+                                {c.test_auc.toFixed(3)}
+                              </td>
+                              <td className="py-2.5 text-right hidden md:table-cell tabular-nums text-muted-foreground">
+                                {c.test_precision.toFixed(3)}
+                              </td>
+                              <td className="py-2.5 text-right hidden md:table-cell tabular-nums text-muted-foreground">
+                                {c.test_recall.toFixed(3)}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </CardContent>
+                </Card>
+              </motion.div>
+            )}
+
+            {/* Regressor R² chart */}
             {chartData.length > 0 && (
               <motion.div
                 initial={{ opacity: 0, y: 16 }}
                 animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.45 }}
+                transition={{ delay: 0.46 }}
               >
                 <Card>
                   <CardHeader>
-                    <CardTitle>Model Performance Comparison</CardTitle>
+                    <CardTitle>Regressor Performance</CardTitle>
                     <CardDescription>
-                      R² score (% explained variance) and overall accuracy per model
+                      Test R² vs CV R² — higher is better (max 100%)
                     </CardDescription>
                   </CardHeader>
                   <CardContent>
-                    <ResponsiveContainer width="100%" height={240}>
+                    <ResponsiveContainer width="100%" height={220}>
                       <BarChart
                         data={chartData}
-                        margin={{ top: 4, right: 8, left: -8, bottom: 4 }}
+                        margin={{ top: 4, right: 8, left: -8, bottom: 40 }}
                       >
                         <CartesianGrid strokeDasharray="3 3" className="opacity-40" />
                         <XAxis
                           dataKey="name"
-                          tick={{ fontSize: 11 }}
+                          tick={{ fontSize: 10 }}
                           tickLine={false}
                           interval={0}
-                          angle={-25}
+                          angle={-20}
                           textAnchor="end"
-                          height={48}
+                          height={52}
                         />
                         <YAxis
                           domain={[0, 100]}
@@ -550,17 +587,10 @@ export default function Dashboard() {
                         <Tooltip
                           formatter={(v: number, name: string) => [
                             `${v.toFixed(1)}%`,
-                            name === 'r2Pct' ? 'R² Score' : 'Accuracy',
+                            name === 'r2Pct' ? 'Test R²' : 'CV R²',
                           ]}
                           labelFormatter={(label, payload) =>
-                            payload?.[0]?.payload?.target
-                              ? `${label} → ${payload[0].payload.target}`
-                              : label
-                          }
-                        />
-                        <Legend
-                          formatter={(v) =>
-                            v === 'r2Pct' ? 'R² Score (%)' : 'Accuracy (%)'
+                            payload?.[0]?.payload?.fullName ?? label
                           }
                         />
                         <Bar dataKey="r2Pct" name="r2Pct" radius={[4, 4, 0, 0]}>
@@ -573,11 +603,11 @@ export default function Dashboard() {
                           ))}
                         </Bar>
                         <Bar
-                          dataKey="accuracy"
-                          name="accuracy"
+                          dataKey="cvR2Pct"
+                          name="cvR2Pct"
                           radius={[4, 4, 0, 0]}
                           fill="#10b981"
-                          fillOpacity={0.55}
+                          fillOpacity={0.5}
                         />
                       </BarChart>
                     </ResponsiveContainer>
@@ -586,8 +616,8 @@ export default function Dashboard() {
               </motion.div>
             )}
 
-            {/* Recent predictions */}
-            {predictions.length > 0 && (
+            {/* Recent optimizations */}
+            {optimizationRecords.length > 0 && (
               <motion.div
                 initial={{ opacity: 0, y: 16 }}
                 animate={{ opacity: 1, y: 0 }}
@@ -597,9 +627,9 @@ export default function Dashboard() {
                   <CardHeader>
                     <div className="flex items-center justify-between">
                       <div>
-                        <CardTitle>Recent Predictions</CardTitle>
+                        <CardTitle>Recent Optimizations</CardTitle>
                         <CardDescription>
-                          Last {Math.min(predictions.length, 10)} prediction runs
+                          Last {Math.min(optimizationRecords.length, 8)} Optuna runs
                         </CardDescription>
                       </div>
                       <Button
@@ -608,37 +638,46 @@ export default function Dashboard() {
                         onClick={() => navigate('/predictions')}
                       >
                         <Target className="mr-2 h-4 w-4" />
-                        Predict
+                        Optimize
                       </Button>
                     </div>
                   </CardHeader>
                   <CardContent>
                     <div className="space-y-2">
-                      {predictions.slice(0, 10).map((p) => (
+                      {optimizationRecords.slice(0, 8).map((rec) => (
                         <div
-                          key={p.id}
+                          key={rec.id}
                           className="flex items-center justify-between py-2 border-b last:border-0"
                         >
                           <div className="flex items-center gap-3 min-w-0">
-                            <div className="h-7 w-7 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
-                              <Sparkles className="h-3.5 w-3.5 text-primary" />
+                            <div
+                              className={cn(
+                                'h-7 w-7 rounded-full flex items-center justify-center flex-shrink-0',
+                                rec.isAnomaly
+                                  ? 'bg-red-100 dark:bg-red-900/30'
+                                  : 'bg-green-100 dark:bg-green-900/30'
+                              )}
+                            >
+                              {rec.isAnomaly ? (
+                                <AlertTriangle className="h-3.5 w-3.5 text-red-500" />
+                              ) : (
+                                <CheckCircle2 className="h-3.5 w-3.5 text-green-600 dark:text-green-400" />
+                              )}
                             </div>
                             <div className="min-w-0">
                               <p className="text-sm font-medium truncate">
-                                {p.targetVariable}
+                                {rec.anomalyLabel}
                               </p>
                               <p className="text-xs text-muted-foreground">
-                                {modelTypeLabel(p.modelType)}
+                                Score: {(rec.compositeScore * 100).toFixed(1)} · Quality:{' '}
+                                {(rec.qualityPassProbability * 100).toFixed(0)}%
                               </p>
                             </div>
                           </div>
                           <div className="text-right flex-shrink-0 ml-4">
-                            <p className="text-sm font-semibold tabular-nums">
-                              {p.result.toFixed(3)}
-                            </p>
                             <p className="text-xs text-muted-foreground flex items-center justify-end gap-1">
                               <Clock className="h-3 w-3" />
-                              {formatDate(p.timestamp)}
+                              {formatDate(rec.timestamp)}
                             </p>
                           </div>
                         </div>
@@ -719,77 +758,58 @@ export default function Dashboard() {
               </motion.div>
             )}
 
-            {/* Best model spotlight */}
-            {bestModel && (
+            {/* Training session spotlight */}
+            {trainingSession && (
               <motion.div
                 initial={{ opacity: 0, y: 16 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: 0.47 }}
               >
-                <Card className="border-amber-200 dark:border-amber-800">
+                <Card className="border-purple-200 dark:border-purple-800">
                   <CardHeader className="pb-2">
                     <div className="flex items-center gap-2">
-                      <Award className="h-4 w-4 text-amber-500" />
-                      <CardTitle className="text-base">Best Model</CardTitle>
+                      <Cpu className="h-4 w-4 text-purple-500" />
+                      <CardTitle className="text-base">Active Pipeline</CardTitle>
                     </div>
                   </CardHeader>
                   <CardContent className="space-y-3">
-                    <div>
-                      <span
-                        className={cn(
-                          'text-xs font-medium px-2 py-0.5 rounded',
-                          modelTypeBadgeClass(bestModel.type)
-                        )}
-                      >
-                        {modelTypeLabel(bestModel.type)}
-                      </span>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        Target: <span className="font-medium text-foreground">{bestModel.config.targetVariable}</span>
-                      </p>
+                    <div className="text-xs text-muted-foreground">
+                      Trained {formatDate(trainingSession.trainedAt)}
                     </div>
 
                     <Separator />
 
                     <div className="grid grid-cols-2 gap-3 text-center">
                       {[
-                        { label: 'R² Score', value: `${(bestModel.metrics.r2 * 100).toFixed(1)}%`, color: r2ColorClass(bestModel.metrics.r2) },
-                        { label: 'Accuracy', value: `${bestModel.metrics.accuracy.toFixed(1)}%`, color: '' },
-                        { label: 'RMSE', value: bestModel.metrics.rmse.toFixed(4), color: '' },
-                        { label: 'MAE', value: bestModel.metrics.mae.toFixed(4), color: '' },
+                        { label: 'Training Rows', value: trainingSession.rows.toLocaleString() },
+                        { label: 'Features', value: trainingSession.features },
+                        { label: 'Regressors', value: trainingSession.regressors?.length ?? 0 },
+                        { label: 'Classifiers', value: trainingSession.classifiers?.length ?? 0 },
                       ].map((m) => (
                         <div key={m.label} className="bg-muted/40 rounded-lg p-2">
                           <p className="text-xs text-muted-foreground">{m.label}</p>
-                          <p className={cn('text-sm font-bold tabular-nums mt-0.5', m.color)}>
-                            {m.value}
-                          </p>
+                          <p className="text-sm font-bold tabular-nums mt-0.5">{m.value}</p>
                         </div>
                       ))}
                     </div>
 
-                    {bestModel.cvMetrics && (
-                      <div className="text-xs text-muted-foreground bg-muted/40 rounded-lg p-2">
-                        <p className="flex items-center gap-1 font-medium text-foreground mb-1">
-                          <ShieldCheck className="h-3.5 w-3.5 text-green-600" />
-                          5-Fold CV
-                        </p>
-                        <p>
-                          R²: {(bestModel.cvMetrics.mean.r2 * 100).toFixed(1)}%
-                          {' ± '}
-                          {(bestModel.cvMetrics.std.r2 * 100).toFixed(1)}%
-                        </p>
-                        {bestModel.metrics.r2 - bestModel.cvMetrics.mean.r2 > 0.1 ? (
-                          <p className="text-amber-600 dark:text-amber-400 flex items-center gap-1 mt-1">
-                            <AlertTriangle className="h-3 w-3" />
-                            Possible overfitting detected
-                          </p>
-                        ) : (
-                          <p className="text-green-600 dark:text-green-400 flex items-center gap-1 mt-1">
-                            <CheckCircle2 className="h-3 w-3" />
-                            Good generalisation
-                          </p>
-                        )}
-                      </div>
-                    )}
+                    <div className="flex flex-wrap gap-1.5 text-xs">
+                      {trainingSession.shap?.computed && (
+                        <span className="px-2 py-0.5 rounded bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300">
+                          SHAP ✓
+                        </span>
+                      )}
+                      {trainingSession.anomaly?.trained && (
+                        <span className="px-2 py-0.5 rounded bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-300">
+                          Isolation Forest ✓
+                        </span>
+                      )}
+                      {trainingSession.forecaster?.trained && (
+                        <span className="px-2 py-0.5 rounded bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300">
+                          Forecaster ✓
+                        </span>
+                      )}
+                    </div>
 
                     <Button
                       className="w-full"
@@ -797,7 +817,7 @@ export default function Dashboard() {
                       onClick={() => navigate('/predictions')}
                     >
                       <Sparkles className="mr-2 h-4 w-4" />
-                      Use This Model
+                      Run Optimization
                     </Button>
                   </CardContent>
                 </Card>
@@ -818,9 +838,10 @@ export default function Dashboard() {
                   {[
                     { label: 'Upload New Dataset', Icon: Upload, path: '/upload' },
                     { label: 'Explore Data', Icon: Database, path: '/explorer' },
-                    { label: 'Train a Model', Icon: Cpu, path: '/training' },
-                    { label: 'Make a Prediction', Icon: Target, path: '/predictions' },
+                    { label: 'Train ML Pipeline', Icon: Cpu, path: '/training' },
+                    { label: 'Run Optimization', Icon: Target, path: '/predictions' },
                     { label: 'View Reports', Icon: Activity, path: '/reports' },
+                    { label: 'Settings', Icon: Settings, path: '/settings' },
                   ].map(({ label, Icon, path }) => (
                     <Button
                       key={path}
@@ -848,8 +869,7 @@ export default function Dashboard() {
             <CardHeader>
               <CardTitle>Getting Started</CardTitle>
               <CardDescription>
-                Follow these four steps to set up your steel production optimisation
-                pipeline.
+                Follow these four steps to set up your steel production ML optimization pipeline.
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -883,11 +903,10 @@ export default function Dashboard() {
               <div className="flex items-start gap-3 text-sm text-muted-foreground">
                 <TrendingUp className="h-4 w-4 mt-0.5 flex-shrink-0 text-primary" />
                 <p>
-                  Start by uploading a CSV or Excel file containing historical steel
-                  plant data (heats, temperatures, alloy additions, energy usage, etc.).
-                  The system will auto-categorise your columns and guide you through
-                  training Linear Regression, Random Forest, and Gradient Boosting models
-                  to predict and optimise your target KPIs.
+                  Upload a CSV with historical steel plant shift data, then run the Python ML
+                  pipeline — LightGBM regressors, CatBoost classifiers, SHAP analysis, Isolation
+                  Forest anomaly detection, and Optuna Bayesian optimization will automatically
+                  train and find optimal furnace setpoints for your KPIs.
                 </p>
               </div>
             </CardContent>

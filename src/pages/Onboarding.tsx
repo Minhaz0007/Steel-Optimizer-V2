@@ -53,18 +53,18 @@ const steps = [
   {
     id: 3,
     title: "How ML Works",
-    description: "We train multiple algorithms to find the best fit.",
+    description: "A 4-stage Python pipeline trains specialized models for steel production.",
     icon: Cpu,
     content: (
       <div className="space-y-4 text-center">
-        <p>Our pipeline tests:</p>
+        <p>Our pipeline runs:</p>
         <div className="grid grid-cols-2 gap-2 text-sm">
-          <div className="bg-muted p-2 rounded">Random Forest</div>
-          <div className="bg-muted p-2 rounded">XGBoost</div>
-          <div className="bg-muted p-2 rounded">Linear Regression</div>
-          <div className="bg-muted p-2 rounded">LightGBM</div>
+          <div className="bg-muted p-2 rounded">LightGBM Regressors</div>
+          <div className="bg-muted p-2 rounded">CatBoost Classifiers</div>
+          <div className="bg-muted p-2 rounded">Isolation Forest</div>
+          <div className="bg-muted p-2 rounded">Optuna Optimizer</div>
         </div>
-        <p>The best model is automatically selected for predictions.</p>
+        <p>Optuna Bayesian optimization finds the best furnace setpoints.</p>
       </div>
     )
   },

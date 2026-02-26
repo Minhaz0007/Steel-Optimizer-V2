@@ -40,7 +40,7 @@ const WORKFLOW_STEPS = [
     name: 'Train Models',
     icon: Cpu,
     path: '/training',
-    hint: 'Build your AI prediction model',
+    hint: 'Run LightGBM, CatBoost & Optuna',
   },
   {
     step: 4,
@@ -63,8 +63,8 @@ export function Sidebar() {
   const [collapsed, setCollapsed] = useState(false);
 
   const datasets = useStore((s) => s.datasets);
-  const trainedModels = useStore((s) => s.trainedModels);
-  const predictions = useStore((s) => s.predictions);
+  const trainingSession = useStore((s) => s.trainingSession);
+  const optimizationRecords = useStore((s) => s.optimizationRecords);
   const userName = useStore((s) => s.userName);
 
   // Determine completion state for each step
@@ -72,10 +72,10 @@ export function Sidebar() {
     () => [
       datasets.length > 0,
       datasets.some((d) => d.mappings.length > 0),
-      trainedModels.length > 0,
-      predictions.length > 0,
+      trainingSession !== null,
+      optimizationRecords.length > 0,
     ],
-    [datasets, trainedModels, predictions]
+    [datasets, trainingSession, optimizationRecords]
   );
 
   const completedCount = stepsDone.filter(Boolean).length;
