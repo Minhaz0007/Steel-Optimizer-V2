@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useStore } from '@/store/useStore';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -7,7 +7,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Progress } from '@/components/ui/progress';
 import { toast } from 'sonner';
-import { trainModels, type TrainedModel, type TrainingConfig } from '@/lib/ml-engine';
+import type { TrainedModel, TrainingConfig } from '@/lib/ml-engine';
 import { motion } from 'framer-motion';
 import { Loader2, Trophy, ArrowRight, TrendingUp, AlertCircle, ChevronDown, ChevronUp } from 'lucide-react';
 import {
@@ -153,6 +153,10 @@ export default function Training() {
   const [activePreset, setActivePreset] = useState<string | null>(null);
   const [stepsOpen, setStepsOpen] = useState(true);
 
+  // Keep a ref to the active worker so we can terminate it on unmount or cancel
+  const workerRef = useRef<Worker | null>(null);
+  useEffect(() => () => { workerRef.current?.terminate(); }, []);
+
   const applyPreset = (presetId: string) => {
     if (!currentDataset) return;
     const preset = GOAL_PRESETS.find(p => p.id === presetId);
@@ -176,7 +180,7 @@ export default function Training() {
     toast.success(`Preset applied — target: "${chosen.columnName}". All features selected. Click Start Training when ready.`);
   };
 
-  const handleTrain = async () => {
+  const handleTrain = () => {
     if (!currentDataset || !targetVar) return;
 
     setIsTraining(true);
@@ -204,32 +208,50 @@ export default function Training() {
       models: ['linear', 'rf', 'xgboost'],
     };
 
-    try {
-      // ── Run training directly in the browser ─────────────────────────────
-      // ml-engine.ts is pure JS (no Node.js APIs) so it runs fine in-browser.
-      // This avoids the 413 / 50 MB payload limit of the /api/train endpoint.
-      const trainedModels = await trainModels(
-        currentDataset.data,
-        config,
-        (label: string, pct: number) => {
-          setProgressLabel(label);
-          setProgress(pct);
-        }
-      );
+    // ── Spin up a Web Worker so training runs on a background thread ────────
+    // This keeps the UI fully responsive — no freezing — regardless of
+    // dataset size. Vite bundles the worker file automatically.
+    workerRef.current?.terminate(); // cancel any previous run
+    const worker = new Worker(
+      new URL('../lib/training.worker.ts', import.meta.url),
+      { type: 'module' }
+    );
+    workerRef.current = worker;
 
-      trainedModels.forEach(m => addTrainedModel(m));
-      setResults(trainedModels);
-      setProgress(100);
-      setProgressLabel('Done!');
-      setIsTraining(false);
-      toast.success(`Training complete! ${trainedModels.length} models ready.`);
-    } catch (err: any) {
-      console.error(err);
-      setError(err?.message ?? 'Training failed. Check that selected features and target are numeric columns with sufficient data.');
+    worker.onmessage = (e: MessageEvent) => {
+      const payload = e.data;
+      if (payload.type === 'progress') {
+        setProgressLabel(payload.label as string);
+        setProgress(payload.pct as number);
+      } else if (payload.type === 'result') {
+        const trainedModels: TrainedModel[] = payload.models;
+        trainedModels.forEach(m => addTrainedModel(m));
+        setResults(trainedModels);
+        setProgress(100);
+        setProgressLabel('Done!');
+        setIsTraining(false);
+        toast.success(`Training complete! ${trainedModels.length} models ready.`);
+        worker.terminate();
+      } else if (payload.type === 'error') {
+        console.error(payload.message);
+        setError(payload.message as string);
+        setIsTraining(false);
+        setProgress(0);
+        toast.error('Training failed');
+        worker.terminate();
+      }
+    };
+
+    worker.onerror = (e) => {
+      console.error(e);
+      setError(e.message ?? 'Training failed. Check that selected features and target are numeric columns with sufficient data.');
       setIsTraining(false);
       setProgress(0);
       toast.error('Training failed');
-    }
+      worker.terminate();
+    };
+
+    worker.postMessage({ data: currentDataset.data, config });
   };
 
   if (!currentDataset) {
