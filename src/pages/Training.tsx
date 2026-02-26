@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
+import Papa from 'papaparse';
 import { useStore } from '@/store/useStore';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -101,10 +102,16 @@ export default function Training() {
     abortRef.current = ctrl;
 
     try {
+      // Convert to CSV (not JSON) so the request body is ~10-20x smaller.
+      // JSON repeats every column name on every row; CSV only writes it once
+      // in the header — this keeps the payload well under proxy size limits
+      // (nginx defaults to 1 MB) that cause 413 errors.
+      const csvBody = Papa.unparse(currentDataset.data);
+
       const res = await fetch('/api/train', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ data: currentDataset.data }),
+        headers: { 'Content-Type': 'text/csv' },
+        body: csvBody,
         signal: ctrl.signal,
       });
 

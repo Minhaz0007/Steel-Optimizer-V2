@@ -9,26 +9,14 @@ import { tmpdir } from "os";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // ---------------------------------------------------------------------------
-// Helper: write an array of row objects to a temporary CSV file.
+// Helper: write raw CSV text to a temporary file and return the path.
 // ---------------------------------------------------------------------------
-function writeDataToCsv(data: any[]): string {
-  if (!data || data.length === 0) throw new Error("Empty data array.");
-  const columns = Object.keys(data[0]);
-  const escape = (v: any): string => {
-    const s = v == null ? "" : String(v);
-    return s.includes(",") || s.includes("\n") || s.includes('"')
-      ? `"${s.replace(/"/g, '""')}"`
-      : s;
-  };
-  const lines = [
-    columns.join(","),
-    ...data.map((row) => columns.map((col) => escape(row[col])).join(",")),
-  ];
+function writeCsvToTmp(csvText: string): string {
   const tmpPath = path.join(
     tmpdir(),
     `steel_${Date.now()}_${Math.random().toString(36).slice(2)}.csv`
   );
-  writeFileSync(tmpPath, lines.join("\n"), "utf8");
+  writeFileSync(tmpPath, csvText, "utf8");
   return tmpPath;
 }
 
@@ -47,15 +35,18 @@ async function startServer() {
   app.use(express.urlencoded({ limit: "200mb", extended: true }));
 
   // ── /api/train ─────────────────────────────────────────────────────────────
-  // POST { data: any[] }
+  // POST <csv text body>  Content-Type: text/csv
+  // Sending raw CSV (not JSON) keeps the payload ~10-20x smaller, avoiding
+  // proxy body-size limits (nginx default: 1 MB) that would cause 413 errors.
+  //
   // Streams SSE events from Python stdout:
   //   { type:"progress", label:string, pct:number }
   //   { type:"result", regressors:[...], classifiers:[...], ... }
   //   { type:"error", message:string }
-  app.post("/api/train", async (req, res) => {
-    const { data } = req.body ?? {};
-    if (!Array.isArray(data) || data.length === 0) {
-      res.status(400).json({ error: "Missing or empty data array." });
+  app.post("/api/train", express.text({ type: "text/csv", limit: "200mb" }), async (req, res) => {
+    const csvText = typeof req.body === "string" ? req.body.trim() : "";
+    if (!csvText) {
+      res.status(400).json({ error: "Missing or empty CSV body." });
       return;
     }
 
@@ -76,7 +67,7 @@ async function startServer() {
 
     try {
       send({ type: "progress", label: "Writing dataset to temp file…", pct: 2 });
-      csvPath = writeDataToCsv(data);
+      csvPath = writeCsvToTmp(csvText);
 
       const py = spawn(
         "python3",
