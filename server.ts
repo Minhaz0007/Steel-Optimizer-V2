@@ -41,13 +41,18 @@ async function startServer() {
   const PORT = Number(process.env.PORT) || 3000;
   const ARTIFACT_DIR = process.env.ARTIFACT_DIR || "ml/artifacts";
 
+  // Global body size limit — must be set before any route/middleware that reads the body.
+  // A 27k-row dataset can easily exceed the default 100kb Express limit.
+  app.use(express.json({ limit: "200mb" }));
+  app.use(express.urlencoded({ limit: "200mb", extended: true }));
+
   // ── /api/train ─────────────────────────────────────────────────────────────
   // POST { data: any[] }
   // Streams SSE events from Python stdout:
   //   { type:"progress", label:string, pct:number }
   //   { type:"result", regressors:[...], classifiers:[...], ... }
   //   { type:"error", message:string }
-  app.post("/api/train", express.json({ limit: "100mb" }), async (req, res) => {
+  app.post("/api/train", async (req, res) => {
     const { data } = req.body ?? {};
     if (!Array.isArray(data) || data.length === 0) {
       res.status(400).json({ error: "Missing or empty data array." });
@@ -111,7 +116,7 @@ async function startServer() {
   // ── /api/recommend ─────────────────────────────────────────────────────────
   // POST { context: Record<string, number> }
   // Returns JSON RecommendationResult
-  app.post("/api/recommend", express.json({ limit: "1mb" }), async (req, res) => {
+  app.post("/api/recommend", async (req, res) => {
     const { context } = req.body ?? {};
     if (!context || typeof context !== "object") {
       res.status(400).json({ error: "Missing context object." });
